@@ -78,16 +78,10 @@ def run_trial(dim: int, idx: int, params) -> None:
     """
     print(f"=== TRIAL {idx} | dim={dim} ===", flush=True)
 
-    # # --- Mesh & function spaces
-    # mesh = UnitSquareMesh(dim, dim)
-    # A = FunctionSpace(mesh, "DG", 0)
-    # P = FunctionSpace(mesh, "CG", 1)
+    
     V_max = params.vol_frac
     f = params.source_strength
-    # bc = [DirichletBC(P, Constant(0.0), WestNorth())]
-    # f = interpolate(Constant(params.source_strength), P)
-
-    # Fix the master seed for reproducibility
+    
     # Determine number of seeds based on backend
     backend = (params.backend or "").lower()
     if backend == "mergesplit":
@@ -127,17 +121,8 @@ def run_trial(dim: int, idx: int, params) -> None:
             # --- Data storage lists, regular list storing objectives at iter k
             a_list, b_list, u_list, lam_list, grad_list = [], [], [], [], []
             obj_list, tv_list, compliance_list, infeas_list = [], [], [], []
-            funnel_list, h_tv_list = [], []
+            funnel_list = []
 
-            # --- Stores a triplet ( aug_lagr_k => L(b_{k}, b_{k}, lam_{k}); aug_lagr_k3 => L(b_{k+1}, a_{k}, lam_{k}); aug_lagr_2k3 => L(b_{k+1}, a_{k+1}, lam_{k})
-            # --- For checking how objective changes across the three admm updates (b, a, \lambda)
-            # --- For diagnostic purposes only
-            aug_lagr_list = []
-
-            # --- All these list store pair of objectives (before and after updates of block variables)
-            # --- For diagnostic purposes only
-            sub1_obj_list_pairs, compliance_list_pairs, sub1_penalty_list_pairs =  [], [], []
-            sub2_obj_list_pairs, tv_list_pairs, sub2_penalty_list_pairs         =  [], [], []
             runtime1_list, runtime2_list = [], []
 
             # infeas_k = (1 / len(b_k)) * (np.linalg.norm(a_k - b_k) ** 2)
@@ -165,8 +150,7 @@ def run_trial(dim: int, idx: int, params) -> None:
                 # --- Subproblem 1 ---
                 t0 = time.perf_counter()
                 b_k1, u_k1 = sub1.solve(a_k, b_k, lam_k, rho_k)
-                # b_k1 = b_opt.vector().get_local()
-                # u_k1 = u_opt.vector().get_local()
+            
                 runtime1_list.append(time.perf_counter() - t0)
 
                 # --- Subproblem 2 ---
@@ -202,25 +186,7 @@ def run_trial(dim: int, idx: int, params) -> None:
 
                     '''----------Compute everything----------
                     This includes computing Compliance, TV and Objective values
-                    before and after each subproblem solve
-                    This is for diagnostic purpose only
                     '''
-                    sub1_obj_k, compliance_k, pen_k, gradL_k = sub1.compute_Objs(a_k, b_k, lam_k, rho_k)
-                    
-                    tv_k = sub2.compute_TV(a_k, b_k, lam_k, rho_k)
-                   
-                    lagr_k =  sub1_obj_k + tv_k - (rho_k/2)*np.linalg.norm(lam_k)**2
-
-                    sub1_obj_k3, compliance_k3, pen_k3, gradL_k3 = sub1.compute_Objs(a_k, b_k1, lam_k, rho_k)
-                    tv_k3 = sub2.compute_TV(a_k, b_k1, lam_k, rho_k)
-                    f_k3 = sub2.computeF(a_k, b_k1, lam_k, rho_k)
-                    lagr_k3 =  sub1_obj_k3 + tv_k3 - (rho_k/2)*np.linalg.norm(lam_k)**2
-                    
-                    sub1_obj_2k3, compliance_2k3, pen_2k3, gradL_2k3 = sub1.compute_Objs(a_k1, b_k1, lam_k, rho_k)
-                    tv_2k3 = sub2.compute_TV(a_k1, b_k1, lam_k, rho_k)
-                    f_2k3 = sub2.computeF(a_k1, b_k1, lam_k, rho_k)
-                    lagr_2k3 =  sub1_obj_2k3 + tv_2k3 - (rho_k/2)*np.linalg.norm(lam_k)**2
-
                     sub1_obj_k1, compliance_k1, pen_k1, gradL_k1 = sub1.compute_Objs(a_k1, a_k1, lam_k1, rho_k)
                     tv_k1 = sub2.compute_TV(a_k1, b_k1, lam_k1, rho_k)
 
@@ -230,14 +196,11 @@ def run_trial(dim: int, idx: int, params) -> None:
                     b_list.append(b_k1.copy())
                     lam_list.append(lam_k1.copy())
                     # gradient is the value \nabla_b L_{\rho} (with respect to continuous variable)
-                    #grad_list.append(gradL_k.copy())
+                    
                     u_list.append(u_k1.copy())
                     funnel_list.append(params.beta * tau_k)
                     infeas_list.append(np.linalg.norm(b_k1 - a_k1)**2)
-                    
-                    
-                    # --- Store the Augmented Lagrangian triplet 
-                    aug_lagr_list.append((lagr_k, lagr_k3, lagr_2k3))
+                     
                     
                     # --- Store regular list at iter k
                     # --- Thee are our objectives that we actually care about
@@ -246,16 +209,7 @@ def run_trial(dim: int, idx: int, params) -> None:
                     tv_list.append((np.sqrt(len(a_k1)/2))*tv_k1/alpha)
                     obj_list.append(compliance_k1 + tv_k1)
                     
-                    # --- Store pair values of Objectives
-                    sub1_obj_list_pairs.append((sub1_obj_k, sub1_obj_k3))
-                    compliance_list_pairs.append((compliance_k, compliance_k3))
-                    sub1_penalty_list_pairs.append((pen_k, pen_k3))
-
-                    sub2_obj_list_pairs.append((tv_k3 + f_k3, tv_2k3 + f_2k3))
-                    tv_list_pairs.append(((np.sqrt(len(a_k)/2))*tv_k3/alpha, (np.sqrt(len(a_k)/2))*tv_2k3/alpha))
-                    sub2_penalty_list_pairs.append((f_k3, f_2k3))
-                    '''**********************'''
-                    
+                     
                     ''' Update iterates'''
                     a_k, b_k, lam_k = a_k1, b_k1, lam_k1
 
@@ -296,7 +250,6 @@ def run_trial(dim: int, idx: int, params) -> None:
                 # --- Scalar & simple lists ---
                 seed_group.create_dataset("objective_list", data=np.array(obj_list, dtype=np.float64))
                 seed_group.create_dataset("tv_list", data=np.array(tv_list, dtype=np.float64))
-                seed_group.create_dataset("h_tvs", data=np.array(h_tv_list, dtype=np.float64))
                 seed_group.create_dataset("compliance_list", data=np.array(compliance_list, dtype=np.float64))
                 seed_group.create_dataset("runtime_sub1_list", data=np.array(runtime1_list, dtype=np.float64))
                 seed_group.create_dataset("runtime_sub2_list", data=np.array(runtime2_list, dtype=np.float64))
@@ -310,19 +263,6 @@ def run_trial(dim: int, idx: int, params) -> None:
                 grp_iters.create_dataset("u_list", data=np.vstack(u_list))
                 grp_iters.create_dataset("lambda_list", data=np.vstack(lam_list))
                 #grp_iters.create_dataset("gradL_list", data=np.vstack(grad_list))
-                # --- Pair metrics ---
-                grp_pairs = seed_group.create_group("pair_metrics")
-                grp_pairs.create_dataset("sub1_obj_pairs", data=np.array(sub1_obj_list_pairs, dtype=np.float64))
-                grp_pairs.create_dataset("compliance_pairs", data=np.array(compliance_list_pairs, dtype=np.float64))
-                grp_pairs.create_dataset("sub1_penalty_pairs", data=np.array(sub1_penalty_list_pairs, dtype=np.float64))
-                grp_pairs.create_dataset("sub2_obj_pairs", data=np.array(sub2_obj_list_pairs, dtype=np.float64))
-                grp_pairs.create_dataset("tv_pairs", data=np.array(tv_list_pairs, dtype=np.float64))
-                grp_pairs.create_dataset("sub2_penalty_pairs", data=np.array(sub2_penalty_list_pairs, dtype=np.float64))
-
-                # --- Triplet metric ---
-                grp_metrics = seed_group.create_group("triplet_metrics")
-                grp_metrics.create_dataset("aug_lagr_triplets", data=np.array(aug_lagr_list, dtype=np.float64))
-
             print(f">> Added results for seed={seed_i} (dim={dim}, {l} iterations)")
         
         # --- Save summary data ---
@@ -373,10 +313,10 @@ def run_trial(dim: int, idx: int, params) -> None:
             else:
                 # Multiple seeds case (mergesplit)
                 # The second argument is infeasibility tolerance for accepting a solution as a good candidate
-                # if \|v-w\|^2 <= \epsilon(dim), then we use this seed as a representative of the entire sample space
+                # if \|v-w\|^2 <= \epsilon, then we use this seed as a representative of the entire sample space
                 # The ADMM algorithm provably converges in infeasibility i.e. \epsilon goes to 0
                 # for all possible \rho_0 and is independent of dim but since we are only running
-                # the trials for a fixed number of iterations, and the solver IPOPT's convergence may depend on 
+                # the trials for a fixed number of iterations, 
                 # the problem size, we use this as a safe choice. 
                 best_seed, median_seed = find_best_and_median_seeds(h5f, (dim)/2)
 

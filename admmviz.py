@@ -1,7 +1,7 @@
 # API-style loader + lazy access for ADMM multi-seed HDF5 files.
 #
 # Usage:
-#   from admm_api import ADMM
+#   from admmviz import ADMM
 #   admm = ADMM(alpha=1e-6, dim=16, suffix="tri")   # suffix optional
 #
 #   # Median (default) summary
@@ -24,9 +24,7 @@
 # Notes:
 # - This expects the file structure as:
 #     /seed_{i}/objective_list, tv_list, compliance_list, infeas_list, ...
-#     /seed_{i}/iters/a_list, b_list, u_list, lambda_list, gradL_list
-#     /seed_{i}/pair_metrics/*
-#     /seed_{i}/triplet_metrics/*
+#     /seed_{i}/iters/a_list, b_list, u_list, lambda_list
 #     /summary/*  and  /summary/best_iters/*, /summary/median_iters/*
 #
 
@@ -301,7 +299,7 @@ class _SeriesView:
 
     @property
     def h_tvs(self) -> np.ndarray:
-        # if present
+        # Optional metric in some legacy files.
         return self._read("h_tvs")
 
 
@@ -376,7 +374,7 @@ class _PairsView:
         with h5py.File(self.h5_path, "r") as h5f:
             base = f"{self.seed_name}/pair_metrics"
             if base not in h5f:
-                raise KeyError(f"{base} group not found in file.")
+                raise KeyError(f"{base} group not found in file. This run file does not save pair metrics.")
             grp = h5f[base]
             if key not in grp:
                 raise KeyError(f"{base}/{key} not found in file.")
@@ -419,7 +417,7 @@ class _TripletsView:
         with h5py.File(self.h5_path, "r") as h5f:
             base = f"{self.seed_name}/triplet_metrics"
             if base not in h5f:
-                raise KeyError(f"{base} group not found in file.")
+                raise KeyError(f"{base} group not found in file. This run file does not save triplet metrics.")
             grp = h5f[base]
             if key not in grp:
                 raise KeyError(f"{base}/{key} not found in file.")
@@ -491,7 +489,8 @@ class ADMM:
       - trial(seed) returns a lazy view into that seed group
 
     File lookup:
-      base_dir/random_seeds_run_data_{suffix}/{alpha}/{dim}.h5
+            base_dir_{suffix}/{alpha}/{dim}.h5 (if suffix is provided)
+            base_dir/{alpha}/{dim}.h5 (if suffix is empty)
 
     If you already have a full path, pass h5_path directly.
     """
@@ -642,6 +641,22 @@ class ADMM:
                 raise KeyError(f"Seed group '{name}' not found. Available: {list(h5f.keys())}")
         return Trial(self.h5_path, seed)
 
+    def has_pair_metrics(self, seed: SeedLike) -> bool:
+        """Return True if seed_{k}/pair_metrics exists."""
+        if isinstance(seed, str):
+            seed = _seed_name_to_int(seed)
+        seed_name = _seed_int_to_name(int(seed))
+        with h5py.File(self.h5_path, "r") as h5f:
+            return f"{seed_name}/pair_metrics" in h5f
+
+    def has_triplet_metrics(self, seed: SeedLike) -> bool:
+        """Return True if seed_{k}/triplet_metrics exists."""
+        if isinstance(seed, str):
+            seed = _seed_name_to_int(seed)
+        seed_name = _seed_int_to_name(int(seed))
+        with h5py.File(self.h5_path, "r") as h5f:
+            return f"{seed_name}/triplet_metrics" in h5f
+
     # -----------------
     # Seed inventory + lightweight summaries
     # -----------------
@@ -710,6 +725,7 @@ class ADMM:
     # ---- plotting API (discrete by default) ----
     def plot_control(
         self,
+        control_vec: Optional[np.ndarray] = None,
         cont: bool = False,
         fix_diagonal_reflection: bool = True,
         cmap: str = "viridis",
@@ -725,7 +741,10 @@ class ADMM:
         import matplotlib.pyplot as plt
         from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-        a = self.control_cont if cont else self.control
+        # Backward compatible behavior:
+        # - If a vector is supplied, plot it directly.
+        # - Otherwise choose summary median control (discrete/continuous).
+        a = control_vec if control_vec is not None else (self.control_cont if cont else self.control)
         a = np.asarray(a, dtype=float)
 
         if fix_diagonal_reflection:
@@ -772,6 +791,7 @@ class ADMM:
 
     def plot_state(
     self,
+    state_vec: Optional[np.ndarray] = None,
     cont: bool = False,
     transpose: bool = False,
     cmap: str = "viridis",
@@ -792,7 +812,9 @@ class ADMM:
         import matplotlib.pyplot as plt
         from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-        u = self.state_cont if cont else self.state
+        # admm_run_random_seeds.py saves only one state iterate stream (u_list).
+        # Keep cont for API compatibility, but both branches map to state.
+        u = state_vec if state_vec is not None else self.state
         u = np.asarray(u, dtype=float)
 
         if transpose:
@@ -803,7 +825,7 @@ class ADMM:
         ax = plt.gca()
         ax.clear()
 
-        title = "Continuous state u (nodes)" if cont else "Discrete state u (nodes)"
+        title = "State u (nodes)"
         im = _plot_state_pcolormesh(ax, self.dim, u, title=title, cmap=cmap)
 
         # --- Make the plotted field fill the axes tightly ---
