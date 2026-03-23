@@ -3,6 +3,65 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 
 
+def cubic_roots_cardano(a, b, c, d, tol=1e-14):
+    a = np.asarray(a, dtype=np.complex128)
+    b = np.asarray(b, dtype=np.complex128)
+    c = np.asarray(c, dtype=np.complex128)
+    d = np.asarray(d, dtype=np.complex128)
+
+    if not (a.shape == b.shape == c.shape == d.shape):
+        raise ValueError("All coefficient arrays must have the same shape.")
+    if np.any(np.abs(a) < tol):
+        raise ValueError("Leading coefficient 'a' must be nonzero.")
+
+    # Normalize: x^3 + A x^2 + B x + C = 0
+    A = b / a
+    B = c / a
+    C = d / a
+
+    # Depressed cubic y^3 + p y + q = 0 with x = y - A/3
+    p = B - A**2 / 3
+    q = 2*A**3 / 27 - A*B / 3 + C
+
+    Delta = (q/2)**2 + (p/3)**3
+    sqrtDelta = np.sqrt(Delta)
+
+    z1 = -q/2 + sqrtDelta
+    z2 = -q/2 - sqrtDelta
+
+    u = np.power(z1, 1/3)
+    v = np.zeros_like(u)
+
+    # Use uv = -p/3 whenever u is not too small
+    mask_u = np.abs(u) > tol
+    v[mask_u] = -p[mask_u] / (3*u[mask_u])
+
+    # Where u is too small, use z2 instead
+    mask_small_u = ~mask_u
+    if np.any(mask_small_u):
+        v_alt = np.power(z2[mask_small_u], 1/3)
+        u_alt = np.zeros_like(v_alt)
+
+        mask_v = np.abs(v_alt) > tol
+        u_alt[mask_v] = -p[mask_small_u][mask_v] / (3*v_alt[mask_v])
+
+        # If both u and v are ~0, then p=q=0 and the depressed cubic is y^3=0,
+        # so all three roots are just 0 before shifting.
+        u[mask_small_u] = u_alt
+        v[mask_small_u] = v_alt
+
+    omega = -0.5 + 0.5j*np.sqrt(3)
+    omega2 = -0.5 - 0.5j*np.sqrt(3)
+
+    shift = A / 3
+
+    r1 = u + v - shift
+    r2 = omega*u + omega2*v - shift
+    r3 = omega2*u + omega*v - shift
+
+    return r1, r2, r3
+
+
 class Subproblem1Solver:
     """
     Subproblem 1 solver on a triangular UnitSquareMesh(dim, dim)-type grid.
@@ -185,7 +244,7 @@ class Subproblem1Solver:
 
         # ensure denom > 0: v*mu + shift > 0
         #mu_low = np.max(-shift / np.maximum(self.v, safe_eps)) + safe_eps
-        mu_low = max(0.0, np.max(-shift / np.maximum(self.v, safe_eps))) + safe_eps
+        mu_low = -1e5 #max(0.0, np.max(-shift / np.maximum(self.v, safe_eps))) + safe_eps
         #mu_high = max(2.0 * mu_low, 1.0)
         mu_high = 1e5
         gprime = (1.0 - self.eps) * self.penal * np.maximum(b, 1e-5)**(self.penal - 1)
@@ -201,13 +260,17 @@ class Subproblem1Solver:
         print("mean b:", b.mean())
 
         def trial_update(mu):
-            denom = self.v * mu + shift
-            denom = np.maximum(denom, safe_eps)
 
-            b_candidate = b * np.sqrt(numer / denom)
+            # Coefficients of cubic
+            c0 = -gprime * ce * b ** 2
+            c1 = np.zeros_like(c0)
+            c2 = (lam + mu * self.v - rho * a)/self.nele
+            c3 = rho/self.nele * np.ones_like(c0)
+            
+            b_candidate = np.real(cubic_roots_cardano(c3, c2, c1, c0)[0])
 
             b_new = np.maximum(
-                1e-3,
+                self.eps,
                 np.maximum(
                     b - self.move,
                     np.minimum(1.0, np.minimum(b + self.move, b_candidate))
@@ -286,6 +349,7 @@ class Subproblem1Solver:
             print("b: ", b)
 
             change = np.max(np.abs(b - b_old))
+            print("change:", change)
 
         U = self._solve_state(b)
         return b, U
