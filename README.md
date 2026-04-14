@@ -29,4 +29,6 @@
 *metadata accessed via*
 > admm.trial(0).meta
 
-*For deterministic solver there is only a single trial*
+*For deterministic solver there is only a single trial* 
+
+:):
