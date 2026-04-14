@@ -20,10 +20,12 @@
 
 *all scalar valued objects are accessed via*
 > admm.trial(0).series.objective
+
 > admm.trial(0).series.infeasibility
 
 *all vector valued objects are accessed via*
 > admm.trial(0).iters.control
+
 > admm.trial(0).iters.control_cont
 
 *metadata accessed via*
