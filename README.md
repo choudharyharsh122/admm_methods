@@ -1,6 +1,6 @@
 ### To run please use this command in the respecive directory
 
-'python admm_run_random_seeds.py --mesh-list 32,64 --backend gurobi --break-iter 30,30 --alpha 0.01,0.1,1 --rho 5,25,125 --gamma 1.8 --zeta 0.9 --source_strength 1 --vol_frac 0.4'
+> python admm_run_random_seeds.py --mesh-list 32,64 --backend gurobi --break-iter 30,30 --alpha 0.01,0.1,1 --rho 5,25,125 --gamma 1.8 --zeta 0.9 --source_strength 1 --vol_frac 0.4
 
 ### Backend can be set to gurobi, if mergesplit, then this code currently runs for a single seed (hardcoded right now in the file admm_run_random_seeds.py)
 
