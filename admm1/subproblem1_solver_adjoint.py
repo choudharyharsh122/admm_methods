@@ -197,7 +197,7 @@ class Subproblem1Solver:
 
 
         step = (1/(len(a_np))) * float(assemble(1*dx))
-        print(">>>>>>>>>>>>>>>>Volume =", volume)
+        #print(">>>>>>>>>>>>>>>>Volume =", volume)
 
         tape = get_working_tape()
         tape.clear_tape()

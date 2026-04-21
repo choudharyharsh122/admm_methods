@@ -111,11 +111,7 @@ def _as_fenics_function(vec, V: FunctionSpace) -> Function:
     return f
 
 
-def plot_control(control_vec, dim: int, *, title: str = "Control", figsize=(5, 4)) -> None:
-    """
-    Generic FEniCS control plotter (DG0).
-    control_vec must be length 2*dim*dim.
-    """
+def plot_control_field(control_vec, dim: int, *, ax=None, title: str = "Control", figsize=(5, 4), show: bool = True):
     mesh, Vc, _ = _build_fenics_spaces(dim)
     a = np.asarray(control_vec, dtype=float).ravel()
 
@@ -125,30 +121,34 @@ def plot_control(control_vec, dim: int, *, title: str = "Control", figsize=(5, 4
 
     f = _as_fenics_function(a, Vc)
 
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        created_fig = True
+
     plt.sca(ax)
     ax.clear()
-    m = fenics_plot(f, edgecolor='none')
-
-    #ax.set_aspect("equal", adjustable="box")
-    ax.margins(0)              # remove internal padding
-    ax.autoscale_view()        # rescale to data
+    m = fenics_plot(f, edgecolor="none")
+    ax.margins(0)
+    ax.autoscale_view()
 
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="4%", pad=0.1)
-
     cbar = plt.colorbar(m, cax=cax, shrink=0.85)
-    #cbar = plt.colorbar(m, ax=ax)
     cbar.set_ticks(np.linspace(0, 1, 6))
     cbar.ax.tick_params(labelsize=14)
-    #ax.set_title(title)
     ax.set_axis_off()
-    #plt.tight_layout()
-    
-    plt.show()
+
+    if title:
+        ax.set_title(title)
+
+    if show and created_fig:
+        plt.show()
+
+    return ax, m
 
 
-def plot_state(state_vec, dim: int, *, title: str = "State", figsize=(5, 4)) -> None:
+def plot_state_field(state_vec, dim: int, *, ax=None, title: str = "State", figsize=(5, 4), show: bool = True) -> None:
     """
     Generic FEniCS state plotter (CG1).
     state_vec must be length (dim+1)^2.
@@ -162,24 +162,31 @@ def plot_state(state_vec, dim: int, *, title: str = "State", figsize=(5, 4)) -> 
 
     f = _as_fenics_function(u, Vu)
 
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        created_fig = True
+
     plt.sca(ax)
     ax.clear()
-    m = fenics_plot(f)
-    ax.set_aspect("equal", adjustable="box")
-    ax.margins(0)              # remove internal padding
-    ax.autoscale_view()        # rescale to data
+    m = fenics_plot(f, edgecolor="none")
+    ax.margins(0)
+    ax.autoscale_view()
+
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="4%", pad=0.1)
-
     cbar = plt.colorbar(m, cax=cax, shrink=0.85)
-    #cbar = plt.colorbar(m, ax=ax)
+    cbar.set_ticks(np.linspace(u.min(), u.max(), 6))
     cbar.ax.tick_params(labelsize=14)
-    #ax.set_title(title)
     ax.set_axis_off()
-    #ax.set_title(title)
-    #plt.tight_layout()
-    plt.show()
+
+    if title:
+        ax.set_title(title)
+
+    if show and created_fig:
+        plt.show()
+
+    return ax, m
 
 
 # ---------------------------
@@ -367,6 +374,49 @@ class Trial:
     """
     h5_path: str
     seed: int
+    
+    """
+    JSON tree description for one seed-level Trial view.
+    """
+    def describe_tree(self) -> Dict[str, Any]:
+        return {
+            "class": "Trial",
+            "seed": self.seed,
+            "seed_name": self.seed_name,
+            "attributes": {
+                "meta": "HDF5 attributes from /seed_k",
+                "objective_final": self.objective_final,
+                "infeas_final": self.infeas_final,
+            },
+            "children": {
+                "series": {
+                    "type": "_SeriesView",
+                    "fields": [
+                        "objective", "tv", "compliance", "infeas",
+                        "funnel", "runtime_sub1", "runtime_sub2", "h_tvs"
+                    ]
+                },
+                "iters": {
+                    "type": "_ItersView",
+                    "fields": [
+                        "control", "control_cont", "state",
+                        "lam", "gradL",
+                        "control_final", "control_cont_final", "state_final"
+                    ]
+                },
+                "pairs": {
+                    "type": "_PairsView",
+                    "fields": [
+                        "sub1_obj_pairs", "compliance_pairs", "sub1_penalty_pairs",
+                        "sub2_obj_pairs", "tv_pairs", "sub2_penalty_pairs"
+                    ]
+                },
+                "triplets": {
+                    "type": "_TripletsView",
+                    "fields": ["aug_lagr_triplets"]
+                }
+            }
+        }
 
     @property
     def seed_name(self) -> str:
@@ -643,9 +693,11 @@ class ADMM:
         *,
         cont: bool = False,
         best: bool = False,
+        ax=None,
         figsize=(6, 5),
         title: Optional[str] = None,
-    ) -> None:
+        show: bool = True,
+        ):
         """
         Plot a DG0 control as a FEniCS Function.
 
@@ -659,7 +711,7 @@ class ADMM:
             vec = np.asarray(control, dtype=float).ravel()
             if title is None:
                 title = f"Control (provided, {'cont' if cont else 'disc'})"
-            plot_control(vec, dim=self.dim, title=title, figsize=figsize)
+            plot_control_field(vec, dim=self.dim, title=title, figsize=figsize, ax=ax, show=show)
             return
 
         # choose from stored finals
@@ -673,7 +725,7 @@ class ADMM:
         if title is None:
             title = f"{which} control ({'cont' if cont else 'disc'})"
 
-        plot_control(vec, dim=self.dim, title=title, figsize=figsize)
+        plot_control_field(vec, dim=self.dim, title=title, figsize=figsize, ax=ax, show=show)
 
     def plot_state(
         self,
@@ -681,8 +733,10 @@ class ADMM:
         *,
         cont: bool = False,
         best: bool = False,
+        ax=None,
         figsize=(6, 5),
         title: Optional[str] = None,
+        show: bool = True,
     ) -> None:
         """
         Plot a CG1 state as a FEniCS Function.
@@ -700,7 +754,7 @@ class ADMM:
             vec = np.asarray(state, dtype=float).ravel()
             if title is None:
                 title = "State (provided)"
-            plot_state(vec, dim=self.dim, title=title, figsize=figsize)
+            plot_state_field(vec, dim=self.dim, ax=ax, title=title, figsize=figsize, show=show)
             return
 
         # choose from stored finals
@@ -715,5 +769,5 @@ class ADMM:
             title = f"{which} state"
 
         # cont intentionally ignored
-        plot_state(vec, dim=self.dim, title=title, figsize=figsize)
+        plot_state_field(vec, dim=self.dim, ax=ax, title=title, figsize=figsize, show=show)
 

@@ -158,7 +158,6 @@ def run_trial(dim: int, idx: int, params) -> None:
                 # --- Subproblem 1 ---
                 t0 = time.perf_counter()
                 b_k1, u_k1, oc_track_sub1 = sub1.solve(a_k, b_k, lam_k, rho_k, track_oc_convergence=TRACK_OC_CONVERGENCE)
-            
                 runtime1_list.append(time.perf_counter() - t0)
 
                 # --- Subproblem 2 ---
@@ -196,6 +195,7 @@ def run_trial(dim: int, idx: int, params) -> None:
                     This includes computing Compliance, TV and Objective values
                     '''
                     sub1_obj_k1, compliance_k1, pen_k1, gradL_k1 = sub1.compute_Objs(a_k1, a_k1, lam_k1, rho_k)
+                    u_k1 = sub1._solve_state(a_k1)
                     tv_k1 = sub2.compute_TV(a_k1, b_k1, lam_k1, rho_k)
 
 

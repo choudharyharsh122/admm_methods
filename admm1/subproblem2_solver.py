@@ -142,7 +142,7 @@ class Subproblem2Solver:
         E = list(self.graph.edges())
 
         m = gp.Model("graph_binary_opt")
-        #m.Params.OutputFlag = 0
+        m.Params.OutputFlag = 0
         m.Params.Seed = int(seed)
 
         # Binary decision vars: one per node

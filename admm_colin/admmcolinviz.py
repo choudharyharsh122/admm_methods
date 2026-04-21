@@ -98,18 +98,44 @@ def _transpose_control_triangles(a: np.ndarray, n: int) -> np.ndarray:
     return out
 
 
-def _plot_control_tripcolor(ax, n: int, a: np.ndarray, title: Optional[str] = None, cmap: str = "viridis"):
-    points, tri_indices = _build_tri_points_and_indices(n)
-    im = ax.tripcolor(points[:, 0], points[:, 1], tri_indices, a,
-                      shading="flat", cmap=cmap)
-    #ax.set_title(title)
-    ax.set_aspect("equal")
-    ax.set_xlim(0, n)
-    ax.set_ylim(0, n)
-    return im
+def plot_control_field(control_vec, dim: int, *, ax=None, title: str = "Control", figsize=(5, 4), show: bool = True):
+    mesh, Vc, _ = _build_fenics_spaces(dim)
+    a = np.asarray(control_vec, dtype=float).ravel()
+
+    expected = 2 * dim * dim
+    if a.size != expected:
+        raise ValueError(f"Control length mismatch: expected {expected} (=2*{dim}*{dim}), got {a.size}")
+
+    f = _as_fenics_function(a, Vc)
+
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        created_fig = True
+
+    plt.sca(ax)
+    ax.clear()
+    m = fenics_plot(f, edgecolor="none")
+    ax.margins(0)
+    ax.autoscale_view()
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="4%", pad=0.1)
+    cbar = plt.colorbar(m, cax=cax, shrink=0.85)
+    cbar.set_ticks(np.linspace(0, 1, 6))
+    cbar.ax.tick_params(labelsize=14)
+    ax.set_axis_off()
+
+    if title:
+        ax.set_title(title)
+
+    if show and created_fig:
+        plt.show()
+
+    return ax, m
 
 
-def _plot_state_pcolormesh(ax, n: int, u: np.ndarray, title: str, cmap: str = "viridis"):
+def plot_state_field(ax, n: int, u: np.ndarray, title: str, cmap: str = "viridis", show: bool = True):
     u = np.asarray(u, dtype=float)
     expected = (n + 1) * (n + 1)
     if u.size != expected:
@@ -123,6 +149,16 @@ def _plot_state_pcolormesh(ax, n: int, u: np.ndarray, title: str, cmap: str = "v
     ax.set_aspect("equal")
     ax.set_xlim(0, n)
     ax.set_ylim(0, n)
+    if show:
+        plt.show()
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="4%", pad=0.1)
+    cbar = plt.colorbar(im, cax=cax, shrink=0.85)
+    cbar.set_ticks(np.linspace(u.min(), u.max(), 6))
+    cbar.ax.tick_params(labelsize=14)
+    ax.set_axis_off()
+
     return im
 
 
@@ -533,6 +569,89 @@ class Trial:
     h5_path: str
     seed: int
 
+    def describe_tree(self) -> Dict[str, Any]:
+        """
+        JSON tree description for one seed-level Trial view.
+        """
+        seed_path = self.seed_name
+
+        with h5py.File(self.h5_path, "r") as h5f:
+            has_pairs = f"{seed_path}/pair_metrics" in h5f
+            has_triplets = f"{seed_path}/triplet_metrics" in h5f
+            has_oc_tracking = f"{seed_path}/oc_subproblem1_tracking" in h5f
+
+        oc_iters = self.iters.oc_iters.available_iters if has_oc_tracking else []
+
+        return {
+            "class": "Trial",
+            "identity": {
+                "seed": int(self.seed),
+                "seed_name": self.seed_name,
+                "h5_path": self.h5_path,
+            },
+            "attributes": {
+                "meta_keys": sorted([str(k) for k in self.meta.keys()]),
+                "objective_final": float(self.objective_final),
+                "infeas_final": float(self.infeas_final),
+            },
+            "children": {
+                "series": {
+                    "type": "_SeriesView",
+                    "fields": [
+                        "objective",
+                        "tv",
+                        "compliance",
+                        "infeas",
+                        "funnel",
+                        "runtime_sub1",
+                        "runtime_sub2",
+                        "h_tvs",
+                    ],
+                    "h5_base": f"{seed_path}/",
+                },
+                "iters": {
+                    "type": "_ItersView",
+                    "fields": [
+                        "control",
+                        "control_cont",
+                        "state",
+                        "lam",
+                        "control_final",
+                        "control_cont_final",
+                        "state_final",
+                        "oc_iters",
+                    ],
+                    "h5_base": f"{seed_path}/iters",
+                },
+                "oc_iters": {
+                    "type": "_OCItersView",
+                    "available": has_oc_tracking,
+                    "available_iters": oc_iters,
+                    "per_iter_fields": ["F", "gradF", "gradF_norm"],
+                    "h5_base": f"{seed_path}/oc_subproblem1_tracking/admm_iter_k",
+                },
+                "pairs": {
+                    "type": "_PairsView",
+                    "available": has_pairs,
+                    "fields": [
+                        "sub1_obj_pairs",
+                        "compliance_pairs",
+                        "sub1_penalty_pairs",
+                        "sub2_obj_pairs",
+                        "tv_pairs",
+                        "sub2_penalty_pairs",
+                    ],
+                    "h5_base": f"{seed_path}/pair_metrics",
+                },
+                "triplets": {
+                    "type": "_TripletsView",
+                    "available": has_triplets,
+                    "fields": ["aug_lagr_triplets"],
+                    "h5_base": f"{seed_path}/triplet_metrics",
+                },
+            },
+        }
+
     @property
     def seed_name(self) -> str:
         return _seed_int_to_name(self.seed)
@@ -825,10 +944,11 @@ class ADMMColin:
         control_vec: Optional[np.ndarray] = None,
         cont: bool = False,
         best: bool = False,
-        fix_diagonal_reflection: bool = True,
-        cmap: str = "viridis",
-        title: Optional[str] = None,
+        ax = None,
+        fix_diagonal_reflection: bool = False,
         figsize=(6, 5),
+        title: Optional[str] = None,
+        show: bool = True,
     ) -> None:
         """
         Plot control as triangle-wise tripcolor.
@@ -857,55 +977,21 @@ class ADMMColin:
         if fix_diagonal_reflection:
             a = _transpose_control_triangles(a, self.dim)
 
-        # Use the "plt.figure(); ax = plt.gca()" style (often plays nicest with axes_grid1)
-        plt.figure(figsize=figsize)
-        ax = plt.gca()
-        ax.clear()
 
-        plot_title = None if title is None else str(title)
-        im = _plot_control_tripcolor(ax, self.dim, a, title=plot_title, cmap=cmap)
-        if plot_title is not None:
-            ax.set_title(plot_title)
-
-        # --- Make the plotted field fill the axes (tight limits, no padding) ---
-        ax.set_aspect("equal", adjustable="box")
-        ax.margins(0)
-
-        # For tripcolor/collections, autoscale can be finicky; do both:
-        ax.relim()
-        ax.autoscale_view(tight=True)
-
-        # If your _plot_control_tripcolor sets limits with padding, this overrides it.
-        # (Keep this; it helps a lot for "plot inside axis" whitespace.)
-        try:
-            ax.set_xlim(*im.axes.dataLim.intervalx)
-            ax.set_ylim(*im.axes.dataLim.intervaly)
-        except Exception:
-            pass
-
-        # --- Colorbar matched to axes height + tight gap ---
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="4%", pad=0.1)
-
-        cbar = plt.colorbar(im, cax=cax)
-        cbar.ax.tick_params(labelsize=14)
-        #cbar.set_label("w", fontsize=14)
-
-        # Remove the square border/ticks entirely
-        ax.set_axis_off()
-
-        # Avoid tight_layout here (it can reintroduce padding with appended axes)
-        plt.show()
+        plot_control_field(a, dim=self.dim, title=title, figsize=figsize, ax=ax, show=show)
 
 
     def plot_state(
     self,
     state_vec: Optional[np.ndarray] = None,
     cont: bool = False,
+    best = False,
+    ax = None,
     transpose: bool = False,
     cmap: str = "viridis",
     title: Optional[str] = None,
     figsize=(6, 5),
+    show: bool = True,
 ) -> None:
         """
         Plot state as node-wise pcolormesh.
@@ -924,49 +1010,53 @@ class ADMMColin:
 
         # admm_run_random_seeds.py saves only one state iterate stream (u_list).
         # Keep cont for API compatibility, but both branches map to state.
-        u = state_vec if state_vec is not None else self.state
-        u = np.asarray(u, dtype=float)
+        if state_vec is not None:
+            u = state_vec
+        elif best:
+            u = self.state_best
+        else:
+            u = self.state
 
         if transpose:
             u = u.reshape((self.dim + 1, self.dim + 1)).T.ravel()
 
-        # Use this style (works well with axes_grid1)
-        plt.figure(figsize=figsize)
-        ax = plt.gca()
-        ax.clear()
+        # # Use this style (works well with axes_grid1)
+        # plt.figure(figsize=figsize)
+        # ax = plt.gca()
+        # ax.clear()
 
         default_title = "State u (nodes)"
         plot_title = default_title if title is None else str(title)
-        im = _plot_state_pcolormesh(ax, self.dim, u, title=plot_title, cmap=cmap)
-        if plot_title:
-            ax.set_title(plot_title)
+        plot_state_field(ax, self.dim, u, title=plot_title, cmap=cmap, show=show)
+        # if plot_title:
+        #     ax.set_title(plot_title)
 
         # --- Make the plotted field fill the axes tightly ---
-        ax.set_aspect("equal", adjustable="box")
-        ax.margins(0)
+        # ax.set_aspect("equal", adjustable="box")
+        # ax.margins(0)
 
         # For pcolormesh, this reliably tightens limits to the mesh extent
-        ax.relim()
-        ax.autoscale_view(tight=True)
+        # ax.relim()
+        # ax.autoscale_view(tight=True)
 
         # Remove any extra padding that some helper functions introduce
-        try:
-            ax.set_xlim(*im.axes.dataLim.intervalx)
-            ax.set_ylim(*im.axes.dataLim.intervaly)
-        except Exception:
-            pass
+        # try:
+        #     ax.set_xlim(*im.axes.dataLim.intervalx)
+        #     ax.set_ylim(*im.axes.dataLim.intervaly)
+        # except Exception:
+        #     pass
 
         # --- Colorbar: same height as the axes, small gap ---
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="4%", pad=0.1)
+        # divider = make_axes_locatable(ax)
+        # cax = divider.append_axes("right", size="4%", pad=0.1)
 
-        cbar = plt.colorbar(im, cax=cax)
-        cbar.ax.tick_params(labelsize=14)
-        #cbar.set_label("u(x)", fontsize=14)
+        # cbar = plt.colorbar(im, cax=cax)
+        # cbar.ax.tick_params(labelsize=14)
+        # #cbar.set_label("u(x)", fontsize=14)
 
-        # No border/ticks
-        ax.set_axis_off()
+        # # No border/ticks
+        # ax.set_axis_off()
 
-        # Avoid tight_layout (it can fight the appended cax)
-        plt.show()
+        # # Avoid tight_layout (it can fight the appended cax)
+        # plt.show()
 

@@ -164,6 +164,7 @@ def run_trial(dim: int, idx: int, params) -> None:
             obj_list.append(compliance_list[-1] + tv_list[-1])
 
 
+
             l = 0
 
             while l < params.break_iter:
@@ -227,6 +228,11 @@ def run_trial(dim: int, idx: int, params) -> None:
                     lagr_2k3 =  sub1_obj_2k3 + tv_2k3 - (rho_k/2)*np.linalg.norm(lam_k)**2
 
                     sub1_obj_k1, compliance_k1, pen_k1, gradL_k1 = core.compute_Objs(a_k1, a_k1, lam_k1, rho_k, sub2.graph, sub2.scale)
+                    ### Compute state at the integer solution ###
+                    a  = Function(A, name="a") 
+                    a.vector().set_local(a_k1)
+                    u_k1 = sub1.core.forward(a).vector().get_local()
+                    
                     tv_k1 = sub2.compute_TV(a_k1, b_k1, lam_k1, rho_k)
 
 
