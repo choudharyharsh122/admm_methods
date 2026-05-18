@@ -8,11 +8,11 @@
 #   admm.objective, admm.tv, admm.compliance
 #
 #   # Median (default) final iterates
-#   admm.control, admm.control_cont, admm.state
+#   admm.control, admm.control_1, admm.state
 #
 #   # Best summary + final iterates
 #   admm.objective_best, admm.tv_best, admm.compliance_best
-#   admm.control_best, admm.control_cont_best, admm.state_best
+#   admm.control_best, admm.control_1_best, admm.state_best
 #
 #
 #   m = admm.median_seed   # int
@@ -135,7 +135,7 @@ def plot_control_field(control_vec, dim: int, *, ax=None, title: str = "Control"
     return ax, m
 
 
-def plot_state_field(ax, n: int, u: np.ndarray, title: str, cmap: str = "viridis", show: bool = True):
+def plot_state_field(ax, n: int, u: np.ndarray, title: str, figsize=(5, 4), cmap: str = "viridis", show: bool = True):
     u = np.asarray(u, dtype=float)
     expected = (n + 1) * (n + 1)
     if u.size != expected:
@@ -144,8 +144,13 @@ def plot_state_field(ax, n: int, u: np.ndarray, title: str, cmap: str = "viridis
     X, Y = np.meshgrid(np.arange(n + 1), np.arange(n + 1))
     u_grid = u.reshape((n + 1, n + 1))
 
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        created_fig = True
+
     im = ax.pcolormesh(X, Y, u_grid, shading="gouraud", cmap=cmap)
-    #ax.set_title(title)
+    ax.set_title(title)
     ax.set_aspect("equal")
     ax.set_xlim(0, n)
     ax.set_ylim(0, n)
@@ -317,14 +322,26 @@ class _SeriesView:
     @property
     def compliance(self) -> np.ndarray:
         return self._read("compliance_list")
+    
+    @property
+    def objective_disc(self) -> np.ndarray:
+        return self._read("objective_disc_list")
+
+    @property
+    def tv_disc(self) -> np.ndarray:
+        return self._read("tv_disc_list")
+
+    @property
+    def compliance_disc(self) -> np.ndarray:
+        return self._read("compliance_disc_list")
 
     @property
     def infeas(self) -> np.ndarray:
         return self._read("infeas_list")
 
     @property
-    def funnel(self) -> np.ndarray:
-        return self._read("funnel_list")
+    def rho(self) -> np.ndarray:
+        return self._read("rho_list")
 
     @property
     def runtime_sub1(self) -> np.ndarray:
@@ -346,7 +363,8 @@ class _ItersView:
     Access to iterate matrices under seed_{i}/iters/.
     Convention mapping:
       a_list -> control
-      b_list -> control_cont
+      b_list -> control_1
+      a_disc_list -> discrete control
       u_list -> state
     """
     h5_path: str
@@ -363,11 +381,15 @@ class _ItersView:
             return np.array(grp[key][()], dtype=float)
 
     @property
-    def control(self) -> np.ndarray:
+    def control_2(self) -> np.ndarray:
         return self._read("a_list")
 
     @property
-    def control_cont(self) -> np.ndarray:
+    def control_disc(self) -> np.ndarray:
+        return self._read("a_disc_list")
+
+    @property
+    def control_1(self) -> np.ndarray:
         return self._read("b_list")
 
     @property
@@ -384,13 +406,18 @@ class _ItersView:
 
     # Convenience finals
     @property
-    def control_final(self) -> np.ndarray:
-        x = self.control
+    def control_1_final(self) -> np.ndarray:
+        x = self.control_1
         return x[-1].copy()
 
     @property
-    def control_cont_final(self) -> np.ndarray:
-        x = self.control_cont
+    def control_2_final(self) -> np.ndarray:
+        x = self.control_2
+        return x[-1].copy()
+    
+    @property
+    def control_disc_final(self) -> np.ndarray:
+        x = self.control_disc
         return x[-1].copy()
 
     @property
@@ -602,7 +629,6 @@ class Trial:
                         "tv",
                         "compliance",
                         "infeas",
-                        "funnel",
                         "runtime_sub1",
                         "runtime_sub2",
                         "h_tvs",
@@ -612,12 +638,14 @@ class Trial:
                 "iters": {
                     "type": "_ItersView",
                     "fields": [
-                        "control",
-                        "control_cont",
+                        "control_1",
+                        "control_2",
+                        "control_disc",
                         "state",
                         "lam",
-                        "control_final",
-                        "control_cont_final",
+                        "control_1_final",
+                        "control_2_final",
+                        "control_disc_final",
                         "state_final",
                         "oc_iters",
                     ],
@@ -684,6 +712,12 @@ class Trial:
         with h5py.File(self.h5_path, "r") as h5f:
             grp = h5f[self.seed_name]
             return _read_last(grp["objective_list"])
+    
+    @property
+    def objective_disc_final(self) -> float:
+        with h5py.File(self.h5_path, "r") as h5f:
+            grp = h5f[self.seed_name]
+            return _read_last(grp["objective_disc_list"])
 
     @property
     def infeas_final(self) -> float:
@@ -699,7 +733,7 @@ class Trial:
 class ADMMColin:
     """
     Summary-first API:
-      - objective/tv/compliance/control/control_cont/state refer to MEDIAN summary
+      - objective/tv/compliance/control/control_1/state refer to MEDIAN summary
       - *_best fields refer to BEST summary
       - median_seed / best_seed are ints to drill down with trial(seed)
       - trial(seed) returns a lazy view into that seed group
@@ -747,8 +781,9 @@ class ADMMColin:
     compliance: float
 
     # Final iterates (median default)
-    control: np.ndarray
-    control_cont: np.ndarray
+    control_2: np.ndarray
+    control_1: np.ndarray
+    control_disc: np.ndarray
     state: np.ndarray
 
     # Scalars (best)
@@ -757,8 +792,9 @@ class ADMMColin:
     compliance_best: float
 
     # Final iterates (best)
-    control_best: np.ndarray
-    control_cont_best: np.ndarray
+    control_2_best: np.ndarray
+    control_1_best: np.ndarray
+    control_disc_best: np.ndarray
     state_best: np.ndarray
 
     # Seeds (int default)
@@ -798,12 +834,14 @@ class ADMMColin:
             self.compliance_best = float(s["best_compliance"][()])
 
             # Final iterates from summary groups
-            self.control = np.array(s["median_iters"]["a_list"][-1], dtype=float)
-            self.control_cont = np.array(s["median_iters"]["b_list"][-1], dtype=float)
+            self.control_2 = np.array(s["median_iters"]["a_list"][-1], dtype=float)
+            self.control_1 = np.array(s["median_iters"]["b_list"][-1], dtype=float)
+            self.control_disc = np.array(s["median_iters"]["a_disc_list"][-1], dtype=float)
             self.state = np.array(s["median_iters"]["u_list"][-1], dtype=float)
 
-            self.control_best = np.array(s["best_iters"]["a_list"][-1], dtype=float)
-            self.control_cont_best = np.array(s["best_iters"]["b_list"][-1], dtype=float)
+            self.control_2_best = np.array(s["best_iters"]["a_list"][-1], dtype=float)
+            self.control_1_best = np.array(s["best_iters"]["b_list"][-1], dtype=float)
+            self.control_disc_best = np.array(s["best_iters"]["a_disc_list"][-1], dtype=float)
             self.state_best = np.array(s["best_iters"]["u_list"][-1], dtype=float)
 
             # Keep a small metadata dict available (cheap)
@@ -823,9 +861,9 @@ class ADMMColin:
             "median_seed", "median_seed_name",
             "best_seed", "best_seed_name",
             "objective", "tv", "compliance",
-            "control", "control_cont", "state",
+            "control_2", "control_1", "control_disc", "state",
             "objective_best", "tv_best", "compliance_best",
-            "control_best", "control_cont_best", "state_best",
+            "control_2_best", "control_1_best", "control_disc_best", "state_best",
             "metadata",
         ]
         methods = [
@@ -905,6 +943,9 @@ class ADMMColin:
                 obj_last = _read_last(grp["objective_list"])
                 tv_last = _read_last(grp["tv_list"])
                 comp_last = _read_last(grp["compliance_list"])
+                obj_disc_last = _read_last(grp["objective_disc_list"])
+                tv_disc_last = _read_last(grp["tv_disc_list"])
+                comp_disc_last = _read_last(grp["compliance_disc_list"])
                 infeas_last = _read_last(grp["infeas_list"])
 
                 row = {
@@ -912,6 +953,9 @@ class ADMMColin:
                     "objective_last": obj_last,
                     "tv_last": tv_last,
                     "compliance_last": comp_last,
+                    "objective_disc_last": obj_last,
+                    "tv_disc_last": tv_last,
+                    "compliance_disc_last": comp_last,
                     "infeas_last": infeas_last,
                 }
 
@@ -942,7 +986,8 @@ class ADMMColin:
     def plot_control(
         self,
         control_vec: Optional[np.ndarray] = None,
-        cont: bool = False,
+        which: int = False,
+        disc: bool = False,
         best: bool = False,
         ax = None,
         fix_diagonal_reflection: bool = False,
@@ -964,13 +1009,27 @@ class ADMMColin:
         import numpy as np
         import matplotlib.pyplot as plt
         from mpl_toolkits.axes_grid1 import make_axes_locatable
-
+    
         if control_vec is not None:
             a = control_vec
         elif best:
-            a = self.control_cont_best if cont else self.control_best
+            if disc:
+                a = self.control_disc_best
+            if which == 1:
+                a = self.control_1_best
+            elif which == 2:
+                a = self.control_2_best
+            else:
+                print("Please enter a valid value for 'which' \in {1, 2}")
         else:
-            a = self.control_cont if cont else self.control
+            if disc:
+                a = self.control_disc
+            if which == 1:
+                a = self.control_1
+            elif which == 2:
+                a = self.control_2
+            else:
+                print("Please enter a valid value for 'which' \in {1, 2}")
 
         a = np.asarray(a, dtype=float)
 
@@ -1027,7 +1086,7 @@ class ADMMColin:
 
         default_title = "State u (nodes)"
         plot_title = default_title if title is None else str(title)
-        plot_state_field(ax, self.dim, u, title=plot_title, cmap=cmap, show=show)
+        plot_state_field(ax, self.dim, u, title=plot_title, cmap=cmap, figsize = figsize, show=show)
         # if plot_title:
         #     ax.set_title(plot_title)
 

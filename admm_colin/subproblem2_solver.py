@@ -44,9 +44,9 @@ class Subproblem2Solver:
 
     def computeF(self, a, b, lam, rho):
         """Quadratic penalty term"""
-        # Regular ADMM form: lambda.(b-a) + rho*|b-a|^2
+        # Regular ADMM form: lambda.(b-a) + (rho/2)*|b-a|^2
         diff = b - a
-        return (lam @ diff + rho * (diff**2).sum()) / len(b)
+        return (lam @ diff + (rho/2) * (diff**2).sum()) / len(b)
 
     # def _build_graph(self, mesh):
     #     G = nx.Graph()
@@ -125,7 +125,7 @@ class Subproblem2Solver:
         Original mergesplit implementation. Tries to return an np.array solution too.
         """
         # Regular ADMM form: lambda.(b-x) + rho*|b-x|^2
-        F = lambda x: (lam * (b - x) + rho * (b - x)**2) / len(b)
+        F = lambda x: (lam * (b - x) + (rho/2) * (b - x)**2) / len(b)
         G = lambda y: (self.alpha * self.scale * np.abs(y)) / math.sqrt(len(b)/2)
         H = lambda x: x.flatten()
 
@@ -163,7 +163,8 @@ class Subproblem2Solver:
         m.Params.Seed = int(seed)
 
         # Binary decision vars: one per node
-        w = m.addMVar(N, vtype=GRB.BINARY, name="w")
+        #w = m.addMVar(N, vtype=GRB.BINARY, name="w")
+        w = m.addMVar(N, vtype=GRB.CONTINUOUS, lb=0.0, ub=1.0, name="w")
         # Start from 'a' if provided
         try:
             w.Start = a
@@ -175,13 +176,14 @@ class Subproblem2Solver:
 
         # Regular ADMM penalty term
         diff = b - w
-        lag = lam @ diff + rho * (diff @ diff)
+        lag = lam @ diff + (rho/2) * (diff @ diff)
         quad_term = lag / len(b)
 
         # TV term using absolute differences on edges
         tv_terms = []
         for k, (i, j) in enumerate(E):
-            d = m.addVar(vtype=GRB.BINARY, name=f"d_{i}_{j}")
+            #d = m.addVar(vtype=GRB.BINARY, name=f"d_{i}_{j}")
+            d = m.addVar(vtype=GRB.CONTINUOUS, lb=0.0, ub=1.0, name=f"d_{i}_{j}")
             m.addConstr(d >=  w[i] - w[j])
             m.addConstr(d >=  w[j] - w[i])
             tv_terms.append(self.alpha * self.scale[k] * d)
@@ -191,7 +193,8 @@ class Subproblem2Solver:
         m.optimize()
 
         if m.SolCount > 0:
-            x = np.asarray(w.X, dtype=int)
+            #x = np.asarray(w.X, dtype=int)
+            x = np.asarray(w.X, dtype=float)
             return x, m.Status
         else:
             return None, m.Status

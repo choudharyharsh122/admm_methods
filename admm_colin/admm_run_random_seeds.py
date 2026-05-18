@@ -127,6 +127,7 @@ def run_trial(dim: int, idx: int, params) -> None:
             a_list, b_list, u_list, lam_list, grad_list = [], [], [], [], []
             obj_list, tv_list, compliance_list, infeas_list = [], [], [], []
             funnel_list = []
+            rho_track_list = []
 
             runtime1_list, runtime2_list = [], []
 
@@ -229,6 +230,7 @@ def run_trial(dim: int, idx: int, params) -> None:
                     rho_k *= 1.25
                     print(f"Step {l} rejected ? increasing penalty (rho={rho_k:.3e}).", flush=True)
 
+                rho_track_list.append(rho_k)
                 l += 1
                 infeas_k = (np.linalg.norm(a_k - b_k) ** 2)
                 print(f"> Infeasibility: {infeas_k:.6e}", flush=True)
@@ -264,6 +266,7 @@ def run_trial(dim: int, idx: int, params) -> None:
                 seed_group.create_dataset("runtime_sub2_list", data=np.array(runtime2_list, dtype=np.float64))
                 seed_group.create_dataset("funnel_list", data=np.array(funnel_list, dtype=np.float64))
                 seed_group.create_dataset("infeas_list", data=np.array(infeas_list, dtype=np.float64))
+                seed_group.create_dataset("rho_list", data=np.array(rho_track_list, dtype=np.float64))
 
                 # --- Iterates ---
                 grp_iters = seed_group.create_group("iters")

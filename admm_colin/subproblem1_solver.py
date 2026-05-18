@@ -81,7 +81,7 @@ class Subproblem1Solver:
     """
 
     def __init__(self, dim, f, volfrac, alpha, graph=None, scale=None,
-                 penal=3.0, eps=1e-3, move=0.2, tol=1e-2, maxiter=50):
+                 penal=3.0, eps=1e-3, move=0.2, tol=1e-1, maxiter=20):
         self.dim = dim
         self.n = dim
         self.f = f

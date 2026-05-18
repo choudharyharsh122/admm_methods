@@ -8,11 +8,11 @@
 #   admm.objective, admm.tv, admm.compliance
 #
 #   # Median (default) final iterates
-#   admm.control, admm.control_cont, admm.state
+#   admm.control_2, admm.control_1, admm.control_disc,admm.state
 #
 #   # Best summary + final iterates
 #   admm.objective_best, admm.tv_best, admm.compliance_best
-#   admm.control_best, admm.control_cont_best, admm.state_best
+#   admm.control_2 _best, admm.control_1_best, admm.control_disc_best, admm.state_best
 #
 #
 #   m = admm.median_seed   # int
@@ -219,10 +219,26 @@ class _SeriesView:
     @property
     def compliance(self) -> np.ndarray:
         return self._read("compliance_list")
+    
+    @property
+    def objective_disc(self) -> np.ndarray:
+        return self._read("objective_disc_list")
+
+    @property
+    def tv_disc(self) -> np.ndarray:
+        return self._read("tv_disc_list")
+
+    @property
+    def compliance_disc(self) -> np.ndarray:
+        return self._read("compliance_disc_list")
 
     @property
     def infeas(self) -> np.ndarray:
         return self._read("infeas_list")
+
+    @property
+    def rho(self) -> np.ndarray:
+        return self._read("rho_list")
 
     @property
     def funnel(self) -> np.ndarray:
@@ -248,7 +264,7 @@ class _ItersView:
     Access to iterate matrices under seed_{i}/iters/.
     Convention mapping:
       a_list -> control
-      b_list -> control_cont
+      b_list -> control_1
       u_list -> state
     """
     h5_path: str
@@ -265,12 +281,16 @@ class _ItersView:
             return np.array(grp[key][()], dtype=float)
 
     @property
-    def control(self) -> np.ndarray:
+    def control_2(self) -> np.ndarray:
         return self._read("a_list")
 
     @property
-    def control_cont(self) -> np.ndarray:
+    def control_1(self) -> np.ndarray:
         return self._read("b_list")
+    
+    @property
+    def control_disc(self) -> np.ndarray:
+        return self._read("a_disc_list")
 
     @property
     def state(self) -> np.ndarray:
@@ -286,15 +306,20 @@ class _ItersView:
 
     # Convenience finals
     @property
-    def control_final(self) -> np.ndarray:
-        x = self.control
+    def control_2_final(self) -> np.ndarray:
+        x = self.control_2
         return x[-1].copy()
 
     @property
-    def control_cont_final(self) -> np.ndarray:
-        x = self.control_cont
+    def control_1_final(self) -> np.ndarray:
+        x = self.control_1
         return x[-1].copy()
 
+    @property
+    def control_disc_final(self) -> np.ndarray:
+        x = self.control_disc
+        return x[-1].copy()
+    
     @property
     def state_final(self) -> np.ndarray:
         x = self.state
@@ -379,43 +404,87 @@ class Trial:
     JSON tree description for one seed-level Trial view.
     """
     def describe_tree(self) -> Dict[str, Any]:
+        """
+        JSON tree description for one seed-level Trial view.
+        """
+        seed_path = self.seed_name
+
+        with h5py.File(self.h5_path, "r") as h5f:
+            has_pairs = f"{seed_path}/pair_metrics" in h5f
+            has_triplets = f"{seed_path}/triplet_metrics" in h5f
+            has_oc_tracking = f"{seed_path}/oc_subproblem1_tracking" in h5f
+
+        oc_iters = self.iters.oc_iters.available_iters if has_oc_tracking else []
+
         return {
             "class": "Trial",
-            "seed": self.seed,
-            "seed_name": self.seed_name,
+            "identity": {
+                "seed": int(self.seed),
+                "seed_name": self.seed_name,
+                "h5_path": self.h5_path,
+            },
             "attributes": {
-                "meta": "HDF5 attributes from /seed_k",
-                "objective_final": self.objective_final,
-                "infeas_final": self.infeas_final,
+                "meta_keys": sorted([str(k) for k in self.meta.keys()]),
+                "objective_final": float(self.objective_final),
+                "infeas_final": float(self.infeas_final),
             },
             "children": {
                 "series": {
                     "type": "_SeriesView",
                     "fields": [
-                        "objective", "tv", "compliance", "infeas",
-                        "funnel", "runtime_sub1", "runtime_sub2", "h_tvs"
-                    ]
+                        "objective",
+                        "tv",
+                        "compliance",
+                        "infeas",
+                        "runtime_sub1",
+                        "runtime_sub2",
+                        "h_tvs",
+                    ],
+                    "h5_base": f"{seed_path}/",
                 },
                 "iters": {
                     "type": "_ItersView",
                     "fields": [
-                        "control", "control_cont", "state",
-                        "lam", "gradL",
-                        "control_final", "control_cont_final", "state_final"
-                    ]
+                        "control_1",
+                        "control_2",
+                        "control_disc",
+                        "state",
+                        "lam",
+                        "control_1_final",
+                        "control_2_final",
+                        "control_disc_final",
+                        "state_final",
+                        "oc_iters",
+                    ],
+                    "h5_base": f"{seed_path}/iters",
+                },
+                "oc_iters": {
+                    "type": "_OCItersView",
+                    "available": has_oc_tracking,
+                    "available_iters": oc_iters,
+                    "per_iter_fields": ["F", "gradF", "gradF_norm"],
+                    "h5_base": f"{seed_path}/oc_subproblem1_tracking/admm_iter_k",
                 },
                 "pairs": {
                     "type": "_PairsView",
+                    "available": has_pairs,
                     "fields": [
-                        "sub1_obj_pairs", "compliance_pairs", "sub1_penalty_pairs",
-                        "sub2_obj_pairs", "tv_pairs", "sub2_penalty_pairs"
-                    ]
+                        "sub1_obj_pairs",
+                        "compliance_pairs",
+                        "sub1_penalty_pairs",
+                        "sub2_obj_pairs",
+                        "tv_pairs",
+                        "sub2_penalty_pairs",
+                    ],
+                    "h5_base": f"{seed_path}/pair_metrics",
                 },
                 "triplets": {
                     "type": "_TripletsView",
-                    "fields": ["aug_lagr_triplets"]
-                }
-            }
+                    "available": has_triplets,
+                    "fields": ["aug_lagr_triplets"],
+                    "h5_base": f"{seed_path}/triplet_metrics",
+                },
+            },
         }
 
     @property
@@ -450,6 +519,12 @@ class Trial:
         with h5py.File(self.h5_path, "r") as h5f:
             grp = h5f[self.seed_name]
             return _read_last(grp["objective_list"])
+       
+    @property
+    def objective_disc_final(self) -> float:
+        with h5py.File(self.h5_path, "r") as h5f:
+            grp = h5f[self.seed_name]
+            return _read_last(grp["objective_disc_list"])
 
     @property
     def infeas_final(self) -> float:
@@ -465,7 +540,7 @@ class Trial:
 class ADMM:
     """
     Summary-first API:
-      - objective/tv/compliance/control/control_cont/state refer to MEDIAN summary
+      - objective/tv/compliance/control/control_1/state refer to MEDIAN summary
       - *_best fields refer to BEST summary
       - median_seed / best_seed are ints to drill down with trial(seed)
       - trial(seed) returns a lazy view into that seed group
@@ -512,8 +587,9 @@ class ADMM:
     compliance: float
 
     # Final iterates (median default)
-    control: np.ndarray
-    control_cont: np.ndarray
+    control_1: np.ndarray
+    control_2: np.ndarray
+    control_disc: np.ndarray
     state: np.ndarray
 
     # Scalars (best)
@@ -522,8 +598,9 @@ class ADMM:
     compliance_best: float
 
     # Final iterates (best)
-    control_best: np.ndarray
-    control_cont_best: np.ndarray
+    control_1_best: np.ndarray
+    control_2_best: np.ndarray
+    control_disc_best: np.ndarray
     state_best: np.ndarray
 
     # Seeds (int default)
@@ -563,12 +640,14 @@ class ADMM:
             self.compliance_best = float(s["best_compliance"][()])
 
             # Final iterates from summary groups
-            self.control = np.array(s["median_iters"]["a_list"][-1], dtype=float)
-            self.control_cont = np.array(s["median_iters"]["b_list"][-1], dtype=float)
+            self.control_2 = np.array(s["median_iters"]["a_list"][-1], dtype=float)
+            self.control_1 = np.array(s["median_iters"]["b_list"][-1], dtype=float)
+            self.control_disc = np.array(s["median_iters"]["a_disc_list"][-1], dtype=float)
             self.state = np.array(s["median_iters"]["u_list"][-1], dtype=float)
 
-            self.control_best = np.array(s["best_iters"]["a_list"][-1], dtype=float)
-            self.control_cont_best = np.array(s["best_iters"]["b_list"][-1], dtype=float)
+            self.control_2_best = np.array(s["best_iters"]["a_list"][-1], dtype=float)
+            self.control_1_best = np.array(s["best_iters"]["b_list"][-1], dtype=float)
+            self.control_disc_best = np.array(s["best_iters"]["a_disc_list"][-1], dtype=float)
             self.state_best = np.array(s["best_iters"]["u_list"][-1], dtype=float)
 
             # Keep a small metadata dict available (cheap)
@@ -588,9 +667,10 @@ class ADMM:
             "median_seed", "median_seed_name",
             "best_seed", "best_seed_name",
             "objective", "tv", "compliance",
-            "control", "control_cont", "state",
+            "objective_disc", "tv_disc", "compliance_disc",
+            "control", "control_1", "state",
             "objective_best", "tv_best", "compliance_best",
-            "control_best", "control_cont_best", "state_best",
+            "control_best", "control_1_best", "state_best",
             "metadata",
         ]
         methods = [
@@ -654,6 +734,9 @@ class ADMM:
                 obj_last = _read_last(grp["objective_list"])
                 tv_last = _read_last(grp["tv_list"])
                 comp_last = _read_last(grp["compliance_list"])
+                obj_last = _read_last(grp["objective_disc_list"])
+                tv_last = _read_last(grp["tv_disc_list"])
+                comp_last = _read_last(grp["compliance_disc_list"])
                 infeas_last = _read_last(grp["infeas_list"])
 
                 row = {
@@ -661,6 +744,9 @@ class ADMM:
                     "objective_last": obj_last,
                     "tv_last": tv_last,
                     "compliance_last": comp_last,
+                    "objective_disc_last": obj_last,
+                    "tv_disc_last": tv_last,
+                    "compliance_disc_last": comp_last,
                     "infeas_last": infeas_last,
                 }
 
@@ -689,43 +775,57 @@ class ADMM:
     
     def plot_control(
         self,
-        control: Optional[np.ndarray] = None,
-        *,
-        cont: bool = False,
+        control_vec: Optional[np.ndarray] = None,
+        which: int = False,
+        disc: bool = False,
         best: bool = False,
-        ax=None,
+        ax = None,
+        fix_diagonal_reflection: bool = False,
         figsize=(6, 5),
         title: Optional[str] = None,
         show: bool = True,
-        ):
+    ) -> None:
         """
         Plot a DG0 control as a FEniCS Function.
 
         Behavior:
           - If `control` is provided: plot that array (ignores best/cont selection except for default title).
           - Else:
-              best=False -> plot median final control (a) or control_cont (b) if cont=True
-              best=True  -> plot best   final control (a) or control_cont (b) if cont=True
+              best=False -> plot median final control (a) or control_1 (b) if cont=True
+              best=True  -> plot best   final control (a) or control_1 (b) if cont=True
         """
-        if control is not None:
-            vec = np.asarray(control, dtype=float).ravel()
-            if title is None:
-                title = f"Control (provided, {'cont' if cont else 'disc'})"
-            plot_control_field(vec, dim=self.dim, title=title, figsize=figsize, ax=ax, show=show)
-            return
-
-        # choose from stored finals
-        if best:
-            vec = self.control_cont_best if cont else self.control_best
-            which = "Best"
+        if control_vec is not None:
+            a = control_vec
+        elif best:
+            if disc:
+                a = self.control_disc_best
+            if which == 1:
+                a = self.control_1_best
+            elif which == 2:
+                a = self.control_2_best
+            else:
+                print("Please enter a valid value for 'which' \in {1, 2}")
         else:
-            vec = self.control_cont if cont else self.control
-            which = "Median"
+            if disc:
+                a = self.control_disc
+            if which == 1:
+                a = self.control_1
+            elif which == 2:
+                a = self.control_2
+            else:
+                print("Please enter a valid value for 'which' \in {1, 2}")
 
         if title is None:
-            title = f"{which} control ({'cont' if cont else 'disc'})"
+            if disc:
+                if best:
+                    title = f"Best control (disc)"
+                else:
+                    title = f"Median control (disc)"
+            else:
+                title = f"{'Best' if best else 'Median'} control ({'1' if which == 1 else '2' if which == 2 else 'disc'})"
+        
 
-        plot_control_field(vec, dim=self.dim, title=title, figsize=figsize, ax=ax, show=show)
+        plot_control_field(a, dim=self.dim, title=title, figsize=figsize, ax=ax, show=show)
 
     def plot_state(
         self,

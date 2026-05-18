@@ -1,0 +1,41 @@
+# Ignore large run/output folders and binaries
+run_data_*/
+run_data*/
+fem_model_tri*/
+fenics_model_tri*/
+admm_slack_poll/
+admm_to/
+admm_to_binary/
+admm1/admm_alpha_rho_sweep/
+*sweep*/
+
+# Large binary data
+*.h5
+*.pkl
+*.npy
+*.npz
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs
+*.log
+*.out
+
+# Other files
+*.bak
+*.tmp
+*.mp4
+*.gif
+*.png
+
