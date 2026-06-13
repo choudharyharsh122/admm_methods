@@ -1,3 +1,4 @@
+from graph_tv import chambolle_pock_graph_tv
 import gurobipy as gp
 from gurobipy import GRB
 import mergesplit.mergesplit as ms
@@ -8,7 +9,7 @@ import math
 import pyomo.environ as pyo
 
 class Subproblem2Solver:
-    def __init__(self, n_x, n_y, alpha, seed):
+    def __init__(self, n_x, n_y, alpha, seed, use_mip=True):
         """
         n_x, n_y : ints
             dimensions of your 2D grid
@@ -22,6 +23,7 @@ class Subproblem2Solver:
         self.n = n_x * n_y
         self.alpha = alpha
         self.seed = seed
+        self.use_mip = bool(use_mip)
 
         # build the graph once
         #self.graph = self._build_graph(n_x, n_y)
@@ -162,9 +164,9 @@ class Subproblem2Solver:
         m.Params.OutputFlag = 0
         m.Params.Seed = int(seed)
 
-        # Binary decision vars: one per node
-        #w = m.addMVar(N, vtype=GRB.BINARY, name="w")
-        w = m.addMVar(N, vtype=GRB.CONTINUOUS, lb=0.0, ub=1.0, name="w")
+        # Decision vars: binary if MIP mode is enabled, otherwise continuous in [0, 1].
+        w_vtype = GRB.BINARY if self.use_mip else GRB.CONTINUOUS
+        w = m.addMVar(N, vtype=w_vtype, lb=0.0, ub=1.0, name="w")
         # Start from 'a' if provided
         try:
             w.Start = a
@@ -182,7 +184,6 @@ class Subproblem2Solver:
         # TV term using absolute differences on edges
         tv_terms = []
         for k, (i, j) in enumerate(E):
-            #d = m.addVar(vtype=GRB.BINARY, name=f"d_{i}_{j}")
             d = m.addVar(vtype=GRB.CONTINUOUS, lb=0.0, ub=1.0, name=f"d_{i}_{j}")
             m.addConstr(d >=  w[i] - w[j])
             m.addConstr(d >=  w[j] - w[i])
@@ -193,8 +194,8 @@ class Subproblem2Solver:
         m.optimize()
 
         if m.SolCount > 0:
-            #x = np.asarray(w.X, dtype=int)
-            x = np.asarray(w.X, dtype=float)
+            x_dtype = int if self.use_mip else float
+            x = np.asarray(w.X, dtype=x_dtype)
             return x, m.Status
         else:
             return None, m.Status
@@ -239,7 +240,8 @@ class Subproblem2Solver:
         model.N_total = pyo.Param(initialize=N)
     
         # Variables
-        model.w = pyo.Var(model.nodes, domain=pyo.Binary, bounds=(0,1))
+        w_domain = pyo.Binary if self.use_mip else pyo.UnitInterval
+        model.w = pyo.Var(model.nodes, domain=w_domain, bounds=(0,1))
         model.d = pyo.Var(model.edges, domain=pyo.NonNegativeReals)
     
         # Optional warm start
@@ -284,3 +286,34 @@ class Subproblem2Solver:
         model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
     
         return model
+    
+    def _run_chambolle_pock(self, a, b, lam, rho, V_max):
+        n = len(b)
+        budget = V_max * n
+        edges = np.asarray(list(self.graph.edges()), dtype=int)
+
+        # ADMM quadratic term in y-update (scaled by 1/n to match subproblem1):
+        # (1/n) * [lambda.(b-y) + (rho/2)||b-y||^2]
+        #   = (rho/(2n)) y^2 + ((-rho*b - lambda)/n) y + const
+        # TV term scaled by 1/sqrt(n/2) to match.
+        a_quad = np.full(n, rho / (2.0 * n), dtype=float)
+        b_lin = (-rho * np.asarray(b, dtype=float) + rho * np.asarray(lam, dtype=float)) / n
+        alpha_scaled = self.alpha / np.sqrt(n / 2.0)
+
+        x_init = np.asarray(a, dtype=float) if a is not None else None
+        sol, info = chambolle_pock_graph_tv(
+            n_vertices=n,
+            edges=edges,
+            a=a_quad,
+            b=b_lin,
+            budget=budget,
+            alpha=alpha_scaled,
+            x_lo=0.0,
+            max_iter=2000,
+            tol=1e-8,
+            x_init=x_init,
+            edge_weights=self.scale,
+        )
+
+        status = "OK" if info.get("converged", False) else "MAX_ITER"
+        return np.asarray(sol, dtype=float), status
