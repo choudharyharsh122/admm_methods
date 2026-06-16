@@ -6,7 +6,7 @@ fenics_model_tri*/
 admm_slack_poll/
 admm_to/
 admm_to_binary/
-admm1/admm_alpha_rho_sweep/
+admm_nc/admm_alpha_rho_sweep/
 *sweep*/
 
 # Large binary data
@@ -14,6 +14,9 @@ admm1/admm_alpha_rho_sweep/
 *.pkl
 *.npy
 *.npz
+
+# Backup files
+admm_colin/backup*
 
 # Python
 __pycache__/

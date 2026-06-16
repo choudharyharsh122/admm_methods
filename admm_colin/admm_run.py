@@ -16,7 +16,12 @@ from cyipopt import Problem
 # Local imports
 from design_variables import DesignVariables
 
-from subproblem1_solver import *
+from subproblem1_solver_impl import (
+    Subproblem1Solver,
+    MaterialInterpolation,
+    generate_unit_square_mesh,
+    build_dirichlet_bc_from_config,
+)
 from subproblem2_solver import Subproblem2Solver
 
 
@@ -230,16 +235,33 @@ def run_trial(dim: int, idx: int, params) -> None:
 
         print(f"======= Running for seed number {i}, value {seed_i}")
 
-        # --- Solver setup
-        #core = Solver(mesh, A, P, bc, f, alpha, V_max)
+        # --- Create mesh and BC ---
+        mesh = generate_unit_square_mesh(dim)
+        
+        # Read dirichlet boundaries and values from config
+        dirichlet_boundaries = params.DIRICHLET_BOUNDARIES
+        bc_values = params.BC_VALUES
+        bc = build_dirichlet_bc_from_config(mesh, dirichlet_boundaries, bc_values)
+        
+        # --- Create load vector (uniform) ---
+        f_vector = np.full(mesh.coords.shape[0], float(params.SOURCE_STRENGTH), dtype=float)
+        
+        # --- Solver setup ---
         sub2 = Subproblem2Solver(
             n_x=dim,
             n_y=2 * dim,
             alpha=alpha,
             seed=seed_i,
             use_mip=bool(params.USE_MIP),
+            cutoff_time=float(params.CUTOFF_TIME),
         )
-        sub1 = Subproblem1Solver(dim, f, volfrac=params.VOL_FRAC, alpha=alpha, graph=sub2.graph, scale=sub2.scale)
+        sub1 = Subproblem1Solver(
+            mesh=mesh,
+            bc=bc,
+            f=f_vector,
+            volfrac=params.VOL_FRAC,
+            material=MaterialInterpolation(penal=3.0, eps=1e-3),
+        )
 
         # --- Data storage lists, regular list storing objectives at iter k
         a_list, b_list, a_disc_list, u_list, lam_list, grad_list = [], [], [], [], [], []
@@ -263,7 +285,7 @@ def run_trial(dim: int, idx: int, params) -> None:
         infeas_list.append(np.linalg.norm(a_k - b_k)**2)
         #grad_list.append(0.4*np.ones(len(b_k)))
         u_list.append(np.zeros((dim+1)*(dim+1)))
-        sub1_obj_k, compliance_k, pen_k, gradL_k = sub1.compute_Objs(a_k, a_k, lam_k, rho_k)
+        sub1_obj_k, compliance_k, pen_k, _ = sub1.compute_objective(a_k, a_k, lam_k, rho_k)
         compliance_list.append(compliance_k)
         tv_list.append(sub2.compute_TV(a_k, b_k, lam_k, rho_k))
         obj_list.append(compliance_list[-1] + tv_list[-1])
@@ -297,9 +319,9 @@ def run_trial(dim: int, idx: int, params) -> None:
                 '''----------Compute everything----------
                 This includes computing Compliance, TV and Objective values
                 '''
-                sub1_obj_k1, compliance_k1, pen_k1, gradL_k1 = sub1.compute_Objs(a_k1, a_k1, lam_k1, rho_k)
-                _, compliance_disc_k1, _, _ = sub1.compute_Objs(a_k1, a_disc_k1, lam_k1, rho_k)
-                u_disc_k1 = sub1._solve_state(a_disc_k1)
+                sub1_obj_k1, compliance_k1, pen_k1, _ = sub1.compute_objective(a_k1, a_k1, lam_k1, rho_k)
+                _, compliance_disc_k1, _, _ = sub1.compute_objective(a_k1, a_disc_k1, lam_k1, rho_k)
+                u_disc_k1 = sub1.solve_state(a_disc_k1)
                 tv_k1 = sub2.compute_TV(a_k1, b_k1, lam_k1, rho_k)
                 tv_disc_k1 = sub2.compute_TV(a_disc_k1, b_k1, lam_k1, rho_k)
 
@@ -431,6 +453,7 @@ REQUIRED_CONFIG_TYPES = {
     "USE_PREV": bool,
     "USE_MIP": bool,
     "BACKEND": str,
+    "CUTOFF_TIME": float,
     "SOURCE_STRENGTH": float,
     "VOL_FRAC": float,
     "MESH_SIZE": int,
@@ -471,13 +494,38 @@ def load_config(config_path: str) -> dict:
     parser.optionxform = str
     parser.read(config_path)
 
+    # Load standard config values
     for section_name in parser.sections():
         for key, raw_value in parser.items(section_name):
             key_upper = key.upper()
             if key_upper in REQUIRED_CONFIG_TYPES:
                 config[key_upper] = parse_cfg_value(key_upper, raw_value)
 
-    missing = [k for k in REQUIRED_CONFIG_TYPES if k not in config]
+    # Load boundary condition values dynamically
+    if "BOUNDARY_CONDITIONS" in parser.sections():
+        bc_section = parser["BOUNDARY_CONDITIONS"]
+        
+        # Parse dirichlet_boundaries
+        dirichlet_boundaries_str = bc_section.get("dirichlet_boundaries", "").strip()
+        dirichlet_boundaries = [b.strip() for b in dirichlet_boundaries_str.split() if b.strip()]
+        config["DIRICHLET_BOUNDARIES"] = dirichlet_boundaries
+        
+        # Extract dirichlet values for each boundary
+        config["BC_VALUES"] = {}
+        for boundary in dirichlet_boundaries:
+            value_key = f"dirichlet_value_{boundary}"
+            if value_key in bc_section:
+                config["BC_VALUES"][boundary] = float(bc_section[value_key])
+            else:
+                config["BC_VALUES"][boundary] = 0.0
+        
+        # Neumann value
+        config["NEUMANN_VALUE"] = float(bc_section.get("neumann_value", "0.0"))
+
+    # Check for missing required keys (exclude BC keys since they're optional/dynamic)
+    bc_optional_keys = {"DIRICHLET_BOUNDARIES", "NEUMANN_VALUE"}
+    required_keys = set(REQUIRED_CONFIG_TYPES.keys()) - bc_optional_keys
+    missing = [k for k in required_keys if k not in config]
     if missing:
         raise ValueError(
             "Missing required config keys in admm_config.cfg: " + ", ".join(missing)

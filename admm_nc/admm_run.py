@@ -235,6 +235,7 @@ def run_trial(dim: int, idx: int, params) -> None:
             alpha=alpha,
             seed=seed_i,
             use_mip=bool(params.USE_MIP),
+            cutoff_time=float(params.CUTOFF_TIME),
         )
         sub1 = Subproblem1Solver(core, space_A=A)
 
@@ -422,6 +423,7 @@ REQUIRED_CONFIG_TYPES = {
     "USE_PREV": bool,
     "USE_MIP": bool,
     "BACKEND": str,
+    "CUTOFF_TIME": float,
     "SOURCE_STRENGTH": float,
     "VOL_FRAC": float,
     "MESH_SIZE": int,

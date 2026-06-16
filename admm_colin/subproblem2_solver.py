@@ -9,7 +9,7 @@ import math
 import pyomo.environ as pyo
 
 class Subproblem2Solver:
-    def __init__(self, n_x, n_y, alpha, seed, use_mip=True):
+    def __init__(self, n_x, n_y, alpha, seed, use_mip=True, cutoff_time=None):
         """
         n_x, n_y : ints
             dimensions of your 2D grid
@@ -24,6 +24,7 @@ class Subproblem2Solver:
         self.alpha = alpha
         self.seed = seed
         self.use_mip = bool(use_mip)
+        self.cutoff_time = cutoff_time
 
         # build the graph once
         #self.graph = self._build_graph(n_x, n_y)
@@ -163,6 +164,8 @@ class Subproblem2Solver:
         m = gp.Model("graph_binary_opt")
         m.Params.OutputFlag = 0
         m.Params.Seed = int(seed)
+        if self.cutoff_time is not None and float(self.cutoff_time) > 0:
+            m.Params.TimeLimit = float(self.cutoff_time)
 
         # Decision vars: binary if MIP mode is enabled, otherwise continuous in [0, 1].
         w_vtype = GRB.BINARY if self.use_mip else GRB.CONTINUOUS
