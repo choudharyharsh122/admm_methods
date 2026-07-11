@@ -3,7 +3,7 @@
 > python admm_run.py
 
 
-### Please check the config files in admm folders for details about parameters.
+### Please check the config files in admm folders for details about parameters, all the algorithm related parameters are in admm_config.cfg.
 
 ### Once the tests are run the complete run history files are saved in respective folders of alpha values:  0.1, 0.01
 
@@ -27,5 +27,11 @@
 > admm.trial(0).meta
 
 *For deterministic solver there is only a single trial* 
+
+*To generate the plot in paper, please run the following scripts first*
+> python oc_method/oc_r_sweep.py --help
+> python admm_colin/admm_alpha_sweep.py --help
+
+*Once you run these for a range of r and alpha values, to generate plot please use the notebook admm_oc_colin_comparison.ipynb*
 
 :):
