@@ -127,7 +127,7 @@ def plot_control_field(control_vec, dim: int, *, ax=None, title: str = "Control"
     ax.set_axis_off()
 
     if title:
-        ax.set_title(title)
+        ax.set_title(title, fontsize=18)
 
     if show and created_fig:
         plt.show()

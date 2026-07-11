@@ -86,7 +86,7 @@ class Subproblem2Solver:
 
         return graph
 
-    def run(self, a, b, lam, rho, V_max, seed, backend):
+    def run(self, a, b, lam, rho, V_max, seed, k, backend):
         """
         Solve the subproblem with the selected backend.
 
@@ -112,6 +112,9 @@ class Subproblem2Solver:
         elif backend == "gurobi":
             x, status = self._run_gurobi(a, b, lam, rho, V_max, seed)
             return x, status
+        elif backend == "chambolle-pock":
+            x, status = self._run_chambolle_pock(a, b, lam, rho, V_max)
+            return x, status
         elif backend in ["scip", "cplex"]:
             solver = pyo.SolverFactory(backend)
             model = self.build_pyomo_model(a, b, lam, rho, V_max)
@@ -120,7 +123,7 @@ class Subproblem2Solver:
             x = np.array([pyo.value(model.w[i]) for i in model.nodes])
             return x, 'OK'
         else:
-            raise ValueError(f"Unknown backend '{backend}'. Use 'mergesplit' or 'gurobi'.")
+            raise ValueError(f"Unknown backend '{backend}'. Use 'mergesplit', 'gurobi', or 'chambolle-pock'.")
 
     # ---------- backend implementations ----------
     def _run_mergesplit(self, a, b, lam, rho, V_max, seed):

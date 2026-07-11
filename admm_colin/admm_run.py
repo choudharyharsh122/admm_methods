@@ -16,7 +16,7 @@ from cyipopt import Problem
 # Local imports
 from design_variables import DesignVariables
 
-from subproblem1_solver_impl import (
+from backup_sub1_oc_accurate import (
     Subproblem1Solver,
     MaterialInterpolation,
     generate_unit_square_mesh,
@@ -213,12 +213,9 @@ def run_trial(dim: int, idx: int, params) -> None:
     if backend == "mergesplit":
         num_seeds = 10
         print(f"Using mergesplit backend: running {num_seeds} random seeds")
-    elif backend == "gurobi":
+    else:
         num_seeds = 1
         print(f"Using gurobi backend: running {num_seeds} seed (deterministic solver)")
-    else:
-        num_seeds = 10
-        print(f"Unknown backend '{backend}': defaulting to {num_seeds} seeds")
     
     seeds = [random.randint(0, 10000) for _ in range(num_seeds)]
 
@@ -295,12 +292,12 @@ def run_trial(dim: int, idx: int, params) -> None:
         while k < params.ITER_MAX and infeas_list[-1] > params.INFEAS_TOL:
                 # --- Subproblem 1 ---
                 t0 = time.perf_counter()
-                b_k1, u_k1, oc_track_sub1 = sub1.solve(a_k, b_k, lam_k, rho_k, track_oc_convergence=params.TRACK_OC_CONVERGENCE)
+                b_k1, u_k1, oc_track_sub1 = sub1.solve(a_k, b_k, lam_k, rho_k, k, track_oc_convergence=params.TRACK_OC_CONVERGENCE)
                 runtime1_list.append(time.perf_counter() - t0)
 
                 # --- Subproblem 2 ---
                 t0 = time.perf_counter()
-                sol, status = sub2.run(a_k, b_k1, lam_k, rho_k, V_max, seed_i, params.BACKEND)
+                sol, status = sub2.run(a_k, b_k1, lam_k, rho_k, V_max, seed_i, k, params.BACKEND)
                 a_k1 = sol.copy()
 
                 # Rounding the solution when solving continuous relaxation
@@ -375,7 +372,7 @@ def run_trial(dim: int, idx: int, params) -> None:
                             if d_bar_k <= params.STAG_THRESH:
                                 rho_k *= params.RHO_INCREASE_FACTOR
                                 # Scaled-dual form: keep unscaled multiplier consistent when rho changes.
-                                lam_k1 /= params.RHO_INCREASE_FACTOR
+                                #lam_k1 /= params.RHO_INCREASE_FACTOR
                                 print(
                                     f"> Stagnation detected. Increasing rho to {rho_k:.6e} "
                                     f"(factor={params.RHO_INCREASE_FACTOR:.3f})",
@@ -386,7 +383,7 @@ def run_trial(dim: int, idx: int, params) -> None:
                     if (k + 1) > 10 and ((k + 1 - 10) % 2 == 0):
                         rho_k *= params.RHO_INCREASE_FACTOR
                         # Scaled-dual form: keep unscaled multiplier consistent when rho changes.
-                        lam_k1 /= params.RHO_INCREASE_FACTOR
+                        #lam_k1 /= params.RHO_INCREASE_FACTOR
                         print(
                             f"> Periodic rho update at iter {k + 1}: rho={rho_k:.6e} "
                             f"(factor={params.RHO_INCREASE_FACTOR:.3f})",
@@ -409,6 +406,8 @@ def run_trial(dim: int, idx: int, params) -> None:
             base_dir = f"run_data_admm_{backend}"
         else:
             base_dir = f"run_data_admm_{penalty_update_method}_{backend}"
+        if params.USE_MIP:
+            base_dir += "_mip"
         new_dir = os.path.join(base_dir, str(alpha))
         os.makedirs(new_dir, exist_ok=True)
         h5_path = os.path.join(new_dir, f"{dim}.h5")

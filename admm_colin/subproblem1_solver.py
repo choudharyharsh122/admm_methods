@@ -601,6 +601,7 @@ class Subproblem1Solver:
         
         converged = False
         loop = 0
+        change = np.inf
         while change > self.tol and loop < self.maxiter:
             b_old = b.copy()
             
