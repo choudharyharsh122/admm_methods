@@ -1,12 +1,8 @@
 from graph_tv import chambolle_pock_graph_tv
-import gurobipy as gp
-from gurobipy import GRB
-import mergesplit.mergesplit as ms
 import networkx as nx
 import numpy as np
 #from fenics import *
 import math
-import pyomo.environ as pyo
 from scipy import sparse
 import osqp
 
@@ -34,18 +30,146 @@ class Subproblem2Solver:
 
         # precompute the per-edge scale factors
         # (so you dont recompute abs(u-v)==1 each iteration)
-        self.scale = np.zeros(len(self.graph.edges()))
-        for k, (u, v) in enumerate(self.graph.edges()):
+        self.edges = list(self.graph.edges())
+        self.edge_i = np.asarray([u for u, _ in self.edges], dtype=int)
+        self.edge_j = np.asarray([v for _, v in self.edges], dtype=int)
+        self.scale = np.zeros(len(self.edges))
+        for k, (u, v) in enumerate(self.edges):
             self.scale[k] = math.sqrt(2) if abs(int(u) - int(v)) == 1 else 1.0  
+        self._osqp_static = None
 
     def compute_TV(self, a, b, lam, rho):
         """Total variation term at (a,b,lam,rho)"""
         # note: lam, rho arent used here  but signature stays same
-        diffs = []
-        for (u, v), s in zip(self.graph.edges(), self.scale):
-            diffs.append(s * abs(a[u] - a[v]))
-        Gg = sum(diffs)
+        Gg = np.sum(self.scale * np.abs(a[self.edge_i] - a[self.edge_j]))
         return (1.0 / self.n_x) * Gg * self.alpha
+
+    def _get_osqp_static(self):
+        if self._osqp_static is not None:
+            return self._osqp_static
+
+        N = self.n
+        M = len(self.edges)
+
+        if M > 0:
+            edge_rows = np.repeat(np.arange(M), 2)
+            edge_cols = np.empty(2 * M, dtype=int)
+            edge_data = np.empty(2 * M, dtype=float)
+
+            edge_cols[0::2] = self.edge_i
+            edge_cols[1::2] = self.edge_j
+            edge_data[0::2] = 1.0
+            edge_data[1::2] = -1.0
+
+            B = sparse.csc_matrix(
+                (edge_data, (edge_rows, edge_cols)),
+                shape=(M, N),
+            )
+        else:
+            B = sparse.csc_matrix((0, N))
+
+        I_w = sparse.eye(N, format="csc")
+        I_d = sparse.eye(M, format="csc")
+
+        zero_wd = sparse.csc_matrix((N, M))
+        zero_dw = sparse.csc_matrix((M, N))
+
+        A_w_bounds = sparse.hstack((I_w, zero_wd), format="csc")
+        A_d_bounds = sparse.hstack((zero_dw, I_d), format="csc")
+        A_budget = sparse.hstack(
+            (
+                sparse.csc_matrix(np.ones((1, N))),
+                sparse.csc_matrix((1, M)),
+            ),
+            format="csc",
+        )
+        A_tv_positive = sparse.hstack((B, -I_d), format="csc")
+        A_tv_negative = sparse.hstack((-B, -I_d), format="csc")
+
+        A = sparse.vstack(
+            (
+                A_w_bounds,
+                A_d_bounds,
+                A_budget,
+                A_tv_positive,
+                A_tv_negative,
+            ),
+            format="csc",
+        )
+
+        lower = np.concatenate(
+            (
+                np.zeros(N),
+                np.zeros(M),
+                np.array([-np.inf]),
+                np.full(M, -np.inf),
+                np.full(M, -np.inf),
+            )
+        )
+
+        q_d = self.alpha * self.scale / math.sqrt(N / 2.0)
+
+        self._osqp_static = {
+            "N": N,
+            "M": M,
+            "B": B,
+            "A": A,
+            "lower": lower,
+            "q_d": q_d,
+            "zero_m": np.zeros(M),
+            "ones_n": np.ones(N),
+            "ones_m": np.ones(M),
+        }
+        return self._osqp_static
+
+    def _build_osqp_solver(self, rho, V_max, q):
+        static = self._get_osqp_static()
+        N = static["N"]
+        M = static["M"]
+
+        P = sparse.block_diag(
+            (
+                (rho / N) * sparse.eye(N, format="csc"),
+                sparse.csc_matrix((M, M)),
+            ),
+            format="csc",
+        )
+
+        upper = np.concatenate(
+            (
+                static["ones_n"],
+                static["ones_m"],
+                np.array([V_max * N]),
+                static["zero_m"],
+                static["zero_m"],
+            )
+        )
+
+        settings = {
+            "verbose": False,
+            "warm_starting": True,
+            "polishing": True,
+            "adaptive_rho": True,
+            "max_iter": 50_000,
+            "eps_abs": 1e-2,
+            "eps_rel": 1e-2,
+            "scaled_termination": True,
+        }
+
+        if self.cutoff_time is not None and float(self.cutoff_time) > 0:
+            settings["time_limit"] = float(self.cutoff_time)
+
+        self._osqp_solver = osqp.OSQP()
+        self._osqp_solver.setup(
+            P=P,
+            q=q,
+            A=static["A"],
+            l=static["lower"],
+            u=upper,
+            **settings,
+        )
+
+        return self._osqp_solver
 
     def computeF(self, a, b, lam, rho):
         """Quadratic penalty term"""
@@ -121,6 +245,8 @@ class Subproblem2Solver:
             x, status = self._run_osqp(a, b, lam, rho, V_max, seed)
             return x, status
         elif backend in ["scip", "cplex"]:
+            import pyomo.environ as pyo
+
             solver = pyo.SolverFactory(backend)
             model = self.build_pyomo_model(a, b, lam, rho, V_max)
             solver.options['time'] = 60
@@ -135,6 +261,8 @@ class Subproblem2Solver:
         """
         Original mergesplit implementation. Tries to return an np.array solution too.
         """
+        import mergesplit.mergesplit as ms
+
         # Regular ADMM form: lambda.(b-x) + rho*|b-x|^2
         F = lambda x: (lam * (b - x) + (rho/2) * (b - x)**2) / len(b)
         G = lambda y: (self.alpha * self.scale * np.abs(y)) / math.sqrt(len(b)/2)
@@ -166,6 +294,9 @@ class Subproblem2Solver:
         """
         Original Gurobi implementation. Returns (x, status).
         """
+        import gurobipy as gp
+        from gurobipy import GRB
+
         N = len(self.graph.nodes)
         E = list(self.graph.edges())
 
@@ -237,11 +368,9 @@ class Subproblem2Solver:
                 "Use Gurobi when self.use_mip=True."
             )
 
-        nodes = list(self.graph.nodes)
-        edges = list(self.graph.edges())
-
-        N = len(nodes)
-        M = len(edges)
+        static = self._get_osqp_static()
+        N = static["N"]
+        M = static["M"]
 
         if N == 0:
             raise ValueError("The graph contains no nodes.")
@@ -257,51 +386,6 @@ class Subproblem2Solver:
 
         if rho < 0:
             raise ValueError("rho must be nonnegative for the QP to be convex.")
-
-        scale = np.asarray(self.scale, dtype=float).reshape(-1)
-        if scale.size != M:
-            raise ValueError(
-                f"Expected self.scale to contain one value per edge ({M}), "
-                f"but got {scale.size}."
-            )
-
-        # If graph node labels are not necessarily 0, ..., N-1, map them to indices.
-        node_to_index = {node: idx for idx, node in enumerate(nodes)}
-
-        # ------------------------------------------------------------
-        # Graph incidence matrix B:
-        #
-        # For edge k = (i, j):
-        #     (B w)_k = w_i - w_j
-        # ------------------------------------------------------------
-        if M > 0:
-            edge_rows = np.repeat(np.arange(M), 2)
-
-            edge_cols = np.empty(2 * M, dtype=int)
-            edge_data = np.empty(2 * M, dtype=float)
-
-            for k, (node_i, node_j) in enumerate(edges):
-                i = node_to_index[node_i]
-                j = node_to_index[node_j]
-
-                edge_cols[2 * k] = i
-                edge_cols[2 * k + 1] = j
-
-                edge_data[2 * k] = 1.0
-                edge_data[2 * k + 1] = -1.0
-
-            B = sparse.csc_matrix(
-                (edge_data, (edge_rows, edge_cols)),
-                shape=(M, N),
-            )
-        else:
-            B = sparse.csc_matrix((0, N))
-
-        # Decision vector:
-        #
-        #     z = [w_1, ..., w_N, d_1, ..., d_M]
-        #
-        n_variables = N + M
 
         # ------------------------------------------------------------
         # Objective:
@@ -319,123 +403,10 @@ class Subproblem2Solver:
         #
         #     1/2 zᵀ P z + qᵀ z
         # ------------------------------------------------------------
-        P_w = (rho / N) * sparse.eye(N, format="csc")
-        P_d = sparse.csc_matrix((M, M))
-
-        P = sparse.block_diag(
-            (P_w, P_d),
-            format="csc",
-        )
-
         q_w = -(lam + rho * b) / N
-        q_d = self.alpha * scale / math.sqrt(N / 2.0)
+        q = np.concatenate((q_w, static["q_d"]))
 
-        q = np.concatenate((q_w, q_d))
-
-        # ------------------------------------------------------------
-        # Constraints use OSQP's form:
-        #
-        #                lower <= A z <= upper
-        #
-        # 1. 0 <= w <= 1
-        # 2. 0 <= d <= 1
-        # 3. sum(w) <= V_max * N
-        # 4. B w - d <= 0
-        # 5. -B w - d <= 0
-        #
-        # Constraints 4 and 5 imply
-        #
-        #     d >= |B w|.
-        # ------------------------------------------------------------
-        I_w = sparse.eye(N, format="csc")
-        I_d = sparse.eye(M, format="csc")
-
-        zero_wd = sparse.csc_matrix((N, M))
-        zero_dw = sparse.csc_matrix((M, N))
-
-        A_w_bounds = sparse.hstack(
-            (I_w, zero_wd),
-            format="csc",
-        )
-
-        A_d_bounds = sparse.hstack(
-            (zero_dw, I_d),
-            format="csc",
-        )
-
-        A_budget = sparse.hstack(
-            (
-                sparse.csc_matrix(np.ones((1, N))),
-                sparse.csc_matrix((1, M)),
-            ),
-            format="csc",
-        )
-
-        A_tv_positive = sparse.hstack(
-            (B, -I_d),
-            format="csc",
-        )
-
-        A_tv_negative = sparse.hstack(
-            (-B, -I_d),
-            format="csc",
-        )
-
-        A = sparse.vstack(
-            (
-                A_w_bounds,
-                A_d_bounds,
-                A_budget,
-                A_tv_positive,
-                A_tv_negative,
-            ),
-            format="csc",
-        )
-
-        lower = np.concatenate(
-            (
-                np.zeros(N),            # w >= 0
-                np.zeros(M),            # d >= 0
-                np.array([-np.inf]),    # no budget lower bound
-                np.full(M, -np.inf),    # B w - d has no lower bound
-                np.full(M, -np.inf),    # -B w - d has no lower bound
-            )
-        )
-
-        upper = np.concatenate(
-            (
-                np.ones(N),                 # w <= 1
-                np.ones(M),                 # d <= 1
-                np.array([V_max * N]),      # sum(w) <= V_max*N
-                np.zeros(M),                # B w - d <= 0
-                np.zeros(M),                # -B w - d <= 0
-            )
-        )
-
-        solver = osqp.OSQP()
-
-        settings = {
-            "verbose": False,
-            "warm_starting": True,
-            "polishing": True,
-            "adaptive_rho": True,
-            "max_iter": 50_000,
-            "eps_abs": 1e-2,
-            "eps_rel": 1e-2,
-            "scaled_termination": True,
-        }
-
-        if self.cutoff_time is not None and float(self.cutoff_time) > 0:
-            settings["time_limit"] = float(self.cutoff_time)
-
-        solver.setup(
-            P=P,
-            q=q,
-            A=A,
-            l=lower,
-            u=upper,
-            **settings,
-        )
+        solver = self._build_osqp_solver(rho, V_max, q)
 
         # Warm-start from a.
         if a is not None:
@@ -445,7 +416,7 @@ class Subproblem2Solver:
                 w_start = np.clip(a, 0.0, 1.0)
 
                 if M > 0:
-                    d_start = np.abs(B @ w_start)
+                    d_start = np.abs(static["B"] @ w_start)
                 else:
                     d_start = np.empty(0, dtype=float)
 
@@ -471,6 +442,8 @@ class Subproblem2Solver:
         return None, status
 
     def build_pyomo_model(self, a, b, lam, rho, V_max):
+        import pyomo.environ as pyo
+
         """
         Generic Pyomo model corresponding to the given Gurobi model.
     

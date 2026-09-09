@@ -67,6 +67,46 @@ def cubic_roots_cardano(a, b, c, d, tol=1e-14):
     return r1, r2, r3
 
 
+def cubic_root_cardano_first_no_linear(a, b, d, tol=1e-14):
+    """Return the first Cardano root for a*x^3 + b*x^2 + d = 0."""
+    if abs(a) < tol:
+        raise ValueError("Leading coefficient 'a' must be nonzero.")
+
+    b = np.asarray(b, dtype=np.complex128)
+    d = np.asarray(d, dtype=np.complex128)
+
+    A = b / a
+    C = d / a
+
+    p = -(A**2) / 3
+    q = 2*A**3 / 27 + C
+
+    Delta = (q/2)**2 + (p/3)**3
+    sqrtDelta = np.sqrt(Delta)
+
+    z1 = -q/2 + sqrtDelta
+    z2 = -q/2 - sqrtDelta
+
+    u = np.power(z1, 1/3)
+    v = np.empty_like(u)
+
+    mask_u = np.abs(u) > tol
+    v[mask_u] = -p[mask_u] / (3*u[mask_u])
+
+    mask_small_u = ~mask_u
+    if np.any(mask_small_u):
+        v_alt = np.power(z2[mask_small_u], 1/3)
+        u_alt = np.zeros_like(v_alt)
+
+        mask_v = np.abs(v_alt) > tol
+        u_alt[mask_v] = -p[mask_small_u][mask_v] / (3*v_alt[mask_v])
+
+        u[mask_small_u] = u_alt
+        v[mask_small_u] = v_alt
+
+    return u + v - A / 3
+
+
 @dataclass
 class MeshData:
     """Abstract mesh description for a PDE discretization."""
@@ -145,6 +185,7 @@ class Subproblem1Solver:
 
         # Build stiffness matrices and load vector
         self.build_stiffness_matrices()
+        self._precompute_stiffness_assembly()
         self.F = self.assemble_load_vector(self.f)
 
     @classmethod
@@ -209,6 +250,11 @@ class Subproblem1Solver:
             
             # Compute element stiffness matrix
             self.KE_all[e] = self._compute_element_stiffness(elem_coords)
+
+    def _precompute_stiffness_assembly(self) -> None:
+        """Precompute invariant COO row/column indices for stiffness assembly."""
+        self.K_row = np.repeat(self.elems, self.nodes_per_elem, axis=1).ravel()
+        self.K_col = np.tile(self.elems, (1, self.nodes_per_elem)).ravel()
 
     def _compute_element_stiffness(self, elem_coords: np.ndarray) -> np.ndarray:
         """Compute the reference element stiffness matrix.
@@ -411,24 +457,11 @@ class Subproblem1Solver:
             np.maximum(b, 1e-5), self.material.penal
         )
         
-        # Assemble global stiffness matrix K(b)
-        K_data = []
-        K_row = []
-        K_col = []
-        
-        for e in range(self.n_elems):
-            elem_nodes = self.elems[e]
-            KE_scaled = k_b[e] * self.KE_all[e]
-            
-            # Add to COO format
-            for i in range(self.nodes_per_elem):
-                for j in range(self.nodes_per_elem):
-                    K_data.append(KE_scaled[i, j])
-                    K_row.append(elem_nodes[i])
-                    K_col.append(elem_nodes[j])
+        # Assemble global stiffness matrix K(b).
+        K_data = (k_b[:, None, None] * self.KE_all).ravel()
         
         K = coo_matrix(
-            (K_data, (K_row, K_col)),
+            (K_data, (self.K_row, self.K_col)),
             shape=(self.n_nodes, self.n_nodes)
         ).tocsc()
         
@@ -463,16 +496,8 @@ class Subproblem1Solver:
             Per-element energy, shape (n_elems,)
         """
         U = np.asarray(U, dtype=float)
-        ce = np.zeros(self.n_elems, dtype=float)
-        
-        for e in range(self.n_elems):
-            elem_nodes = self.elems[e]
-            U_e = U[elem_nodes]
-            
-            # Energy: ce_e = U_e^T * KE_e * U_e
-            ce[e] = U_e @ self.KE_all[e] @ U_e
-        
-        return ce
+        U_elem = U[self.elems]
+        return (U_elem[:, None, :] @ self.KE_all @ U_elem[:, :, None]).reshape(-1)
 
     def update_design(
         self,
@@ -512,18 +537,16 @@ class Subproblem1Solver:
         ce = np.asarray(ce, dtype=float)
         
         gprime = (1.0 - self.material.eps) * self.material.penal * np.maximum(b, 1e-5)**(self.material.penal - 1)
-        numer = np.maximum(gprime * ce, 0.0)
+        c0 = -gprime * ce * b**2
+        c3 = rho / self.n_elems
 
         mu_low = -1e5
         mu_high = 1e5
 
         def trial_update(mu):
-            c0 = -gprime * ce * b**2
-            c1 = np.zeros_like(c0)
             c2 = (lam + mu * self.v - rho * a) / self.n_elems
-            c3 = (rho / self.n_elems) * np.ones_like(c0)
 
-            b_candidate = np.real(cubic_roots_cardano(c3, c2, c1, c0)[0])
+            b_candidate = np.real(cubic_root_cardano_first_no_linear(c3, c2, c0))
             b_new = np.maximum(
                 self.material.eps,
                 np.maximum(
@@ -648,6 +671,7 @@ class Subproblem1Solver:
         b: np.ndarray,
         lam: np.ndarray,
         rho: float,
+        U: Optional[np.ndarray] = None,
     ) -> Tuple[float, float, float, Optional[float]]:
         """Compute the augmented objective.
         
@@ -659,6 +683,8 @@ class Subproblem1Solver:
             ADMM variables
         rho : float
             ADMM penalty parameter
+        U : np.ndarray, optional
+            Precomputed PDE state for b. If omitted, the state is solved here.
         
         Returns
         -------
@@ -675,8 +701,10 @@ class Subproblem1Solver:
         b = np.asarray(b, dtype=float)
         lam = np.asarray(lam, dtype=float)
         
-        # Solve PDE
-        U = self.solve_state(b)
+        if U is None:
+            U = self.solve_state(b)
+        else:
+            U = np.asarray(U, dtype=float)
         
         # Compliance: F^T U
         compliance = float(self.F @ U)
