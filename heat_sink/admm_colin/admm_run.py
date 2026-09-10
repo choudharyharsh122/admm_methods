@@ -11,7 +11,6 @@ import random
 
 import numpy as np
 import networkx as nx  
-from cyipopt import Problem  
 
 # Local imports
 from design_variables import DesignVariables
@@ -316,9 +315,17 @@ def run_trial(dim: int, idx: int, params) -> None:
                 '''----------Compute everything----------
                 This includes computing Compliance, TV and Objective values
                 '''
-                sub1_obj_k1, compliance_k1, pen_k1, _ = sub1.compute_objective(a_k1, a_k1, lam_k1, rho_k)
-                _, compliance_disc_k1, _, _ = sub1.compute_objective(a_k1, a_disc_k1, lam_k1, rho_k)
-                u_disc_k1 = sub1.solve_state(a_disc_k1)
+                u_a_k1 = sub1.solve_state(a_k1)
+                if np.array_equal(a_disc_k1, a_k1):
+                    u_disc_k1 = u_a_k1
+                else:
+                    u_disc_k1 = sub1.solve_state(a_disc_k1)
+                sub1_obj_k1, compliance_k1, pen_k1, _ = sub1.compute_objective(
+                    a_k1, a_k1, lam_k1, rho_k, U=u_a_k1
+                )
+                _, compliance_disc_k1, _, _ = sub1.compute_objective(
+                    a_k1, a_disc_k1, lam_k1, rho_k, U=u_disc_k1
+                )
                 tv_k1 = sub2.compute_TV(a_k1, b_k1, lam_k1, rho_k)
                 tv_disc_k1 = sub2.compute_TV(a_disc_k1, b_k1, lam_k1, rho_k)
 
